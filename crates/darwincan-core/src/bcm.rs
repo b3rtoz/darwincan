@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Messages of the broadcast manager: jobs that send frames cyclically and
 //! jobs that watch received frames for changes and silence, run by the
 //! daemon with its own timers.

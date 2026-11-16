@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 
 //! The daemon measuring its own timing, to tell which part was slow when
 //! frames leave late: the adapter, the daemon's threads or the client.

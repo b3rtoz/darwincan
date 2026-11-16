@@ -148,9 +148,18 @@ pub fn matches(info: &DeviceInfo) -> bool {
 }
 
 fn model(info: &DeviceInfo) -> String {
-    match info.product_string() {
-        Some(name) if !name.trim().is_empty() => name.trim().to_string(),
-        _ => format!("Kvaser adapter {:04x}", info.product_id()),
+    // What the device calls itself, kept to plain text: it goes into the
+    // log, the interface listing and the file of interface names.
+    let name: String = info
+        .product_string()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || " -_./()".contains(*c))
+        .take(48)
+        .collect();
+    match name.trim() {
+        "" => format!("Kvaser adapter {:04x}", info.product_id()),
+        name => name.to_string(),
     }
 }
 
@@ -280,15 +289,14 @@ impl Device {
 
     /// Hand a command to the adapter without waiting for it to be taken.
     ///
-    /// Fails if an earlier command turns out not to have reached the
-    /// adapter; this one is then not handed over either, so that the
-    /// caller hears of the failure.
+    /// An earlier command that turns out not to have reached the adapter
+    /// is logged, and this one is handed over all the same: it may be the
+    /// one that takes a channel off the bus.
     fn write(&self, command: &[u8]) -> io::Result<()> {
         if self.gone.load(Ordering::Acquire) {
             return Err(unplugged());
         }
         let mut out = self.out.lock().unwrap();
-        let mut failed = None;
         while out.pending() > 0 {
             let Some(done) = out.wait_next_complete(Duration::ZERO) else {
                 break;
@@ -299,12 +307,9 @@ impl Device {
                     // A frame that never reached the adapter will not be
                     // reported sent: give its place in the window back.
                     self.lost(&done.buffer[..]);
-                    failed = Some(e);
+                    log(format!("{}: {}", self.model, transmit_failure(e)));
                 }
             }
-        }
-        if let Some(e) = failed {
-            return Err(transmit_failure(e));
         }
         out.submit(command.to_vec().into());
         Ok(())
@@ -494,11 +499,21 @@ impl Backend for Channel {
             .listen_only
             .store(config.listen_only, Ordering::Release);
         shared.fd.store(data.is_some(), Ordering::Release);
-        device.ask_channel(
+        let started = device.ask_channel(
             shared.he,
             proto::CMD_START_CHIP_REQ,
             proto::CMD_START_CHIP_RESP,
-        )?;
+        );
+        if let Err(e) = started {
+            // The request may have been carried out and only its answer
+            // lost: an interface reported as down must not be on the bus.
+            let _ = device.write(&proto::simple(
+                proto::CMD_STOP_CHIP_REQ,
+                shared.he,
+                device.next_transid(),
+            ));
+            return Err(e);
+        }
         shared.open.store(true, Ordering::Release);
         Ok(())
     }

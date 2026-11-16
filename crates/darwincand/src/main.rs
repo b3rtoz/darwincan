@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -69,9 +69,16 @@ fn parse_options(args: &[String], installing: bool) -> Result<Option<Options>, S
             "--socket" => {
                 o.socket = Some(PathBuf::from(args.next().ok_or("--socket needs a path")?));
             }
-            "--vcan" => o
-                .vcans
-                .push(args.next().ok_or("--vcan needs a name")?.clone()),
+            "--vcan" => {
+                let name = args.next().ok_or("--vcan needs a name")?;
+                // Here and not only when it is created: a launch agent
+                // installed with a name that cannot be would fail every
+                // time it is started.
+                if !darwincan_core::is_valid_ifname(name) {
+                    return Err(format!("{name:?} is not a name an interface can have"));
+                }
+                o.vcans.push(name.clone());
+            }
             "--no-vcan" => o.default_vcan = false,
             "--no-hardware" => o.hardware = false,
             "--names" => {
@@ -201,6 +208,7 @@ fn run(options: Options) -> ExitCode {
         }
     );
 
+    darwincand::raise_descriptor_limit();
     if options.hardware {
         if let Err(e) = darwincand::backends::start_hotplug(daemon.clone()) {
             eprintln!("darwincand: cannot watch for USB adapters: {e}");

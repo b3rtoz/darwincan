@@ -480,6 +480,29 @@ Two of its channels on one bus, the same day: the X6 taken off, Kvaser channels 
 
 Not done: bus-off (needs a short between CAN-H and CAN-L; the backend stops the channel on it, as the reference driver does, untested), channels 3 and 4 with traffic, bitrates other than 250 kbit/s with traffic.
 
+### After the pre-release review (2026-11-15)
+
+A review of the code changed the Kvaser backend (a command is now sent even when an earlier one failed, a failed start takes the channel off the bus again, the adapter's name is reduced to plain text before it is logged or stored) and the daemon's handling of clients. Kvaser channels 1 and 2 cabled together at 250 kbit/s, the X6 off the bus.
+
+| Check | Result |
+|---|---|
+| The adapter after the daemon was restarted on the new build | Attached under the same four names |
+| The two-channel run above, repeated in full | Pass: frames of every kind each way, 2000-frame bursts each way, cyclic sending, ISO-TP 4000 bytes each way (gaps 1.54 to 1.84 ms at STmin 1 ms), 24,000 frames each way at once, nothing refused, channels 3 and 4 silent |
+| `canctl latency vcan0` | Median 39 µs |
+| ISO-TP on the virtual bus at STmin 5 ms | Shortest gap 5.004 ms |
+
+The X6 on the same build, later that day: connectors CAN1 and CAN2 (`can0`, `can1`) cabled together, the Kvaser not on that bus, 500 kbit/s with 2 Mbit/s data. The wiring was found by sending one frame from each connector in turn with the other five listen-only.
+
+| Check | Result |
+|---|---|
+| Classic, 29-bit, remote, empty and CAN FD frames (12, 48 and 64 bytes, with and without bit rate switching), each way | Intact; each reported sent on its own interface, 2 µs after the other end's stamp |
+| 5000 frames back to back each way, classic and 64-byte CAN FD frames alternating | All received and all reported, in order; none refused |
+| `send_periodic` every 10 ms for 3 s | 301 frames, 9.91 to 10.13 ms apart |
+| ISO-TP, 4000 bytes, STmin 1 ms: classic each way, and 64-byte CAN FD frames | Intact. Frame ends 2.11 to 2.59 ms apart in classic frames and 2.59 to 2.72 ms apart in CAN FD frames, none under STmin |
+| Both directions at once, 30,000 frames each way, 40 s | All received, in order; none refused; no error frames; nothing in the timing log |
+
+So CAN FD is still accepted on firmware 3.2.0, which the new refusal for firmware older than 2.0 must not affect. Not re-tested: the classic PCAN-USB, which was not attached. Its change (a place in the transmit window is given back for a frame it will never report) has a unit test but has not run on the adapter, and the refusal itself has not been seen on an adapter with old firmware.
+
 ## Bugs found on hardware and fixed
 
 | Symptom | Cause | Fixed |

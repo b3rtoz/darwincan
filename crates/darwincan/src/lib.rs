@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Client library for the darwinCAN daemon.
 //!
 //! ```no_run
@@ -154,11 +156,38 @@ struct Inbox {
     /// Whether the readiness descriptor has been told that events are
     /// held here.
     flagged: bool,
+    /// Frames and messages thrown away here because the program does not
+    /// receive: see [`Inbox::HELD_MAX`].
+    overrun: u64,
 }
 
 impl Inbox {
+    /// The most events kept for a program that is not receiving them. A
+    /// program that only sends still has the daemon's messages taken in,
+    /// to see acknowledgements and the interface's state, and what is on
+    /// the bus comes with them; without a limit that would be kept for
+    /// ever. Beyond it the oldest go, as they would in the daemon.
+    const HELD_MAX: usize = 16 * 1024;
+
     /// Put a message from the daemon where its taker will look for it.
     fn file(&mut self, msg: Message) {
+        if self.events.len() >= Self::HELD_MAX {
+            let oldest_is_data = matches!(
+                self.events.front(),
+                Some(
+                    Message::Frame { .. }
+                        | Message::IsoTpData { .. }
+                        | Message::J1939Data(_)
+                        | Message::BcmNotify { .. }
+                )
+            );
+            // Never an error or the end of a transfer: someone may wait
+            // for exactly that.
+            if oldest_is_data {
+                self.events.pop_front();
+                self.overrun += 1;
+            }
+        }
         match msg {
             Message::Ok => self.acks += 1,
             Message::Refused { code, message } => {
@@ -195,6 +224,10 @@ struct Conn {
     /// Made when a descriptor to wait on is first asked for; `None`
     /// inside if it could not be made.
     notifier: OnceLock<Option<Notifier>>,
+    /// Whether something received is being kept outside the inbox, where
+    /// a receive that does not wait would still find it (the C API's
+    /// ISO-TP channel keeps messages that arrive during a send).
+    held_elsewhere: AtomicBool,
     opened: Instant,
 }
 
@@ -208,6 +241,7 @@ impl Conn {
         Ok(Conn {
             interruptible: AtomicBool::new(false),
             notifier: OnceLock::new(),
+            held_elsewhere: AtomicBool::new(false),
             opened: Instant::now(),
             reader: Mutex::new(MessageReader::new(stream.try_clone()?)),
             writer: Mutex::new((stream.try_clone()?, 0)),
@@ -440,7 +474,7 @@ impl Conn {
     fn settle(&self) {
         if let Some(Some(notifier)) = self.notifier.get() {
             let mut inbox = self.inbox.lock().unwrap();
-            let holding = !inbox.events.is_empty();
+            let holding = !inbox.events.is_empty() || self.held_elsewhere.load(Ordering::Relaxed);
             notifier.update((holding != inbox.flagged).then_some(holding));
             inbox.flagged = holding;
         }
@@ -504,7 +538,21 @@ impl Conn {
 /// so every update collects.
 #[cfg(target_vendor = "apple")]
 struct Notifier {
-    queue: std::os::fd::OwnedFd,
+    queue: std::mem::ManuallyDrop<std::os::fd::OwnedFd>,
+    /// The process that made the queue. A child made by `fork` does not
+    /// inherit a kernel event queue; the number is free there and may
+    /// belong to something else by the time the child lets go of this.
+    owner: u32,
+}
+
+#[cfg(target_vendor = "apple")]
+impl Drop for Notifier {
+    fn drop(&mut self) {
+        if std::process::id() == self.owner {
+            // SAFETY: dropped once, here, and not used again.
+            unsafe { std::mem::ManuallyDrop::drop(&mut self.queue) };
+        }
+    }
 }
 
 #[cfg(target_vendor = "apple")]
@@ -575,7 +623,10 @@ impl Notifier {
             }
             std::os::fd::OwnedFd::from_raw_fd(fd)
         };
-        let notifier = Notifier { queue };
+        let notifier = Notifier {
+            queue: std::mem::ManuallyDrop::new(queue),
+            owner: std::process::id(),
+        };
         let watch = kq::event(socket as usize, kq::EVFILT_READ, kq::EV_ADD, 0);
         notifier.apply(Some(watch)).then_some(notifier)
     }
@@ -672,6 +723,18 @@ fn readable_now(fd: RawFd) -> bool {
         io::Error::last_os_error().kind(),
         io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
     )
+}
+
+/// Refuse a message longer than one request to the daemon can carry,
+/// before the daemon hangs up on it.
+fn sendable(data: &[u8]) -> Result<()> {
+    if data.len() > darwincan_core::wire::MAX_PAYLOAD - 64 {
+        return Err(Error::Daemon {
+            code: ErrorCode::TooBig,
+            message: "the message is longer than can be sent (128 MiB)".into(),
+        });
+    }
+    Ok(())
 }
 
 /// A received frame with its metadata.
@@ -793,7 +856,7 @@ impl RawSocket {
     /// How many frames this socket has lost so far because the program
     /// read too slowly, as of the last frame received.
     pub fn dropped(&self) -> u64 {
-        self.dropped.load(Ordering::Relaxed)
+        self.dropped.load(Ordering::Relaxed) + self.conn.inbox.lock().unwrap().overrun
     }
 
     fn rx_frame(&self, msg: Message) -> Result<Option<RxFrame>> {
@@ -972,7 +1035,15 @@ impl IsoTpSocket {
     /// Start transmitting a message. Returns immediately; the outcome
     /// arrives as [`IsoTpEvent::TxDone`] or [`IsoTpEvent::TxFailed`].
     pub fn send(&self, data: &[u8]) -> Result<()> {
+        sendable(data)?;
         self.conn.send(&Message::IsoTpSend(data.to_vec()))
+    }
+
+    /// Say whether messages received on this channel are being kept
+    /// somewhere a receive would find them, for the descriptor to wait on.
+    pub(crate) fn hold(&self, held: bool) {
+        self.conn.held_elsewhere.store(held, Ordering::Relaxed);
+        self.conn.settle();
     }
 
     /// Block until the next event on the channel.
@@ -1189,6 +1260,7 @@ impl J1939Socket {
 
     /// Send a message to where the socket is connected.
     pub fn send(&self, data: &[u8]) -> Result<()> {
+        sendable(data)?;
         self.conn.send_acked(&Message::J1939Send {
             dst: None,
             priority: None,
@@ -1209,6 +1281,7 @@ impl J1939Socket {
     /// message of more than eight bytes fares after that is told in
     /// notices ([`set_notices`](Self::set_notices)).
     pub fn send_to(&self, data: &[u8], dst: &J1939Addr) -> Result<()> {
+        sendable(data)?;
         self.conn.send_acked(&Message::J1939Send {
             dst: Some(*dst),
             priority: None,
@@ -1219,6 +1292,7 @@ impl J1939Socket {
     /// As [`send_to`](Self::send_to), at a priority of this message's
     /// own: 0 (highest) to 7.
     pub fn send_to_with_priority(&self, data: &[u8], dst: &J1939Addr, priority: u8) -> Result<()> {
+        sendable(data)?;
         self.conn.send_acked(&Message::J1939Send {
             dst: Some(*dst),
             priority: Some(priority),

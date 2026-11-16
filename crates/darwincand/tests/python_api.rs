@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 
 //! The Python package against a real daemon: the tests in `python/tests`,
 //! run with the C library built beside this test.

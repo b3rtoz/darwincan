@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Types shared between the `darwincand` daemon and its clients.
 //!
 //! Frame identifiers, flags and filter semantics deliberately follow Linux

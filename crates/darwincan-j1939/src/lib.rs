@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! An SAE J1939 stack for one CAN interface, without I/O and without a
 //! clock: the caller passes in the frames seen on the bus and the time, and
 //! takes out the frames to send and what each socket is to be given.

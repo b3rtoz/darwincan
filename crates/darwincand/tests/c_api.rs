@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 
 //! The C API against a real daemon: a C program built from the header
 //! and the library as a C user would, and the version check both ways.

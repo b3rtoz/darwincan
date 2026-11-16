@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 
 //! J1939 sockets: one stack per interface, shared by the sockets open on
 //! it, as on Linux. The stack answers for every address its sockets have,
@@ -7,6 +7,7 @@
 //! timing does not depend on any client.
 
 use std::collections::{HashMap, VecDeque};
+use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -18,6 +19,7 @@ use darwincan_j1939::{Origin, Output, SendError, J1939};
 use crate::bus::{Bus, Sink};
 use crate::clock::now_ns;
 use crate::priority::make_current_thread_realtime;
+use crate::session;
 use crate::Shared;
 
 /// How long a frame handed to the adapter may take to be reported sent
@@ -37,6 +39,9 @@ pub(crate) enum NodeInput {
         id: u64,
         addr: J1939Addr,
         out: SyncSender<Message>,
+        /// The client's connection, to end it with if the client does not
+        /// take its answers.
+        client: UnixStream,
     },
     /// Something a socket asks. Answered with `Ok` or `Refused`.
     Request {
@@ -104,12 +109,18 @@ impl Nodes {
         id: u64,
         addr: J1939Addr,
         out: SyncSender<Message>,
+        client: UnixStream,
     ) -> Option<Sender<NodeInput>> {
         // Held until the socket is with a stack: a stack that finds
         // itself without sockets looks for one on its way under this
         // lock before it ends.
         let mut running = self.running.lock().unwrap();
-        let mut open = NodeInput::Open { id, addr, out };
+        let mut open = NodeInput::Open {
+            id,
+            addr,
+            out,
+            client,
+        };
         if let Some(node) = running.get(&bus.index) {
             match node.send(open) {
                 Ok(()) => return Some(node.clone()),
@@ -213,6 +224,7 @@ fn node_loop(shared: Arc<Shared>, bus: Arc<Bus>, node_id: u64, input: Receiver<N
     make_current_thread_realtime();
     let mut stack = J1939::new();
     let mut outs: HashMap<u64, SyncSender<Message>> = HashMap::new();
+    let mut clients: HashMap<u64, UnixStream> = HashMap::new();
     // The frames the adapter has and has not reported sent, in the order
     // they were handed over: each with the socket whose message it
     // belongs to and how long to wait for the report.
@@ -283,7 +295,12 @@ fn node_loop(shared: Arc<Shared>, bus: Arc<Bus>, node_id: u64, input: Receiver<N
                 awaiting.clear();
                 stack.link_down(now);
             }
-            Some(NodeInput::Open { id, addr, out }) => {
+            Some(NodeInput::Open {
+                id,
+                addr,
+                out,
+                client,
+            }) => {
                 // The session has checked the address.
                 let answer = match stack.open(id, addr) {
                     Ok(()) => Message::Ok,
@@ -292,20 +309,32 @@ fn node_loop(shared: Arc<Shared>, bus: Arc<Bus>, node_id: u64, input: Receiver<N
                         message: why.into(),
                     },
                 };
-                let _ = out.send(answer);
-                outs.insert(id, out);
+                // The stack's thread serves every socket on the
+                // interface and keeps the protocol's time, so it does not
+                // wait long for one client to make room for an answer.
+                if session::give_answer(&out, answer) {
+                    outs.insert(id, out);
+                    clients.insert(id, client);
+                } else {
+                    session::hang_up(&client);
+                }
             }
             Some(NodeInput::Request { id, msg }) => {
                 let answer = request(&mut stack, &bus, id, msg);
-                if let Some(out) = outs.get(&id) {
-                    // This waits if the socket's queue is full. A client
-                    // that awaits an answer is reading, so not for long.
-                    let _ = out.send(answer);
+                let taken = outs.get(&id).map(|out| session::give_answer(out, answer));
+                if taken == Some(false) {
+                    // It is not reading what it asks for. Its session
+                    // closes the socket here when its connection ends.
+                    outs.remove(&id);
+                    if let Some(client) = clients.remove(&id) {
+                        session::hang_up(&client);
+                    }
                 }
             }
             Some(NodeInput::Close { id }) => {
                 stack.close(id, now);
                 outs.remove(&id);
+                clients.remove(&id);
                 if stack.is_empty() {
                     let mut running = shared.j1939.running.lock().unwrap();
                     match input.try_recv() {

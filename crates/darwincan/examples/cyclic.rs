@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Send a frame at a fixed interval and change its data while it runs.
 //!
 //!     cargo run --example cyclic -- vcan0 123 20 2

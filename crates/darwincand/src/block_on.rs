@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 
 //! Running a future to completion on the current thread. The USB library
 //! reports adapters being plugged in as a stream; the daemon uses plain

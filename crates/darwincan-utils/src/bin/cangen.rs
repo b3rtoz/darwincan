@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};

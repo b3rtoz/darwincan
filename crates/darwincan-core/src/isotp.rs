@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use std::fmt;
 
 /// Configuration of one ISO-TP (ISO 15765-2) channel, normal addressing.
@@ -71,6 +73,10 @@ impl IsoTpParams {
         }
         if self.max_rx_len == 0 {
             return Err("max_rx_len must be non-zero");
+        }
+        // A message is handed to the client in one piece.
+        if self.max_rx_len as usize > crate::wire::MAX_PAYLOAD - 64 {
+            return Err("max_rx_len is more than can be delivered (128 MiB)");
         }
         Ok(())
     }

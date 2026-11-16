@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 
 //! End-to-end tests: a real daemon on a temporary socket, real clients.
 
@@ -1565,4 +1565,109 @@ fn a_read_timeout_does_not_cut_an_acknowledgement_short() {
     assert!(begun.elapsed() < Duration::from_secs(5));
     // Receiving still times out.
     assert!(s.recv().unwrap_err().is_timeout());
+}
+
+#[test]
+fn a_socket_takes_only_so_many_filters() {
+    let (_d, path) = start();
+    let s = RawSocket::open_at(&path, "vcan0").unwrap();
+    s.set_filters(&vec![Filter::new(0x100, 0x7FF); 512])
+        .unwrap();
+    match s.set_filters(&vec![Filter::new(0x100, 0x7FF); 513]) {
+        Err(Error::Daemon { code, .. }) => assert_eq!(code, ErrorCode::InvalidRequest),
+        other => panic!("unexpected result {other:?}"),
+    }
+    // The 512 are still in force.
+    let other = RawSocket::open_at(&path, "vcan0").unwrap();
+    other.send(&frame(0x100, &[1])).unwrap();
+    other.send(&frame(0x200, &[2])).unwrap();
+    other.flush().unwrap();
+    assert_eq!(s.try_recv().unwrap().unwrap().frame, frame(0x100, &[1]));
+    assert!(s.try_recv().unwrap().is_none());
+}
+
+#[test]
+fn a_broadcast_manager_takes_only_so_many_jobs() {
+    let (_d, path) = start();
+    let jobs = BcmSocket::open_at(&path, "vcan0").unwrap();
+    // Jobs that never send: no timer is set.
+    // By 29-bit identifiers: there are not 4096 of the other kind.
+    let job = |id: u32| {
+        let id = id | darwincan::CAN_EFF_FLAG;
+        BcmMessage {
+            opcode: op::TX_SETUP,
+            can_id: id,
+            frames: vec![Frame::new(Id::Extended(id & darwincan::CAN_EFF_MASK), &[]).unwrap()],
+            ..BcmMessage::default()
+        }
+    };
+    for id in 0..4096 {
+        jobs.send(&job(id)).unwrap();
+    }
+    match jobs.send(&job(4096)) {
+        Err(Error::Daemon { code, .. }) => assert_eq!(code, ErrorCode::InvalidRequest),
+        other => panic!("unexpected result {other:?}"),
+    }
+    // One that exists can still be changed, and room is made by deleting.
+    jobs.send(&job(7)).unwrap();
+    jobs.send(&BcmMessage::tx_delete(7 | darwincan::CAN_EFF_FLAG, false))
+        .unwrap();
+    jobs.send(&job(4096)).unwrap();
+}
+
+#[test]
+fn only_a_socket_is_replaced_and_it_is_the_owners_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let path = std::env::temp_dir().join(format!("dc-bind-{}.sock", std::process::id()));
+    let path = if path.as_os_str().len() > 90 {
+        std::path::PathBuf::from(format!("/tmp/dc-bind-{}.sock", std::process::id()))
+    } else {
+        path
+    };
+    // A file that is not a socket is left alone.
+    std::fs::write(&path, "notes").unwrap();
+    let refused = darwincand::bind(&path).unwrap_err();
+    assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "notes");
+    std::fs::remove_file(&path).unwrap();
+
+    let listener = darwincand::bind(&path).unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+    // A live one is not taken over; one left behind is.
+    assert_eq!(
+        darwincand::bind(&path).unwrap_err().kind(),
+        io::ErrorKind::AddrInUse
+    );
+    drop(listener);
+    drop(darwincand::bind(&path).unwrap());
+    std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn a_socket_that_only_sends_does_not_keep_everything_it_could_receive() {
+    let (_d, path) = start();
+    let quiet = RawSocket::open_at(&path, "vcan0").unwrap();
+    let busy = RawSocket::open_at(&path, "vcan0").unwrap();
+    // More than the library keeps for a program that never receives.
+    let sent = 20_000u32;
+    for n in 0..sent {
+        busy.send(&frame(0x100, &n.to_be_bytes())).unwrap();
+        if n % 1000 == 999 {
+            busy.flush().unwrap();
+            // Taking in the daemon's answers takes in the frames as well.
+            quiet.flush().unwrap();
+        }
+    }
+    let mut kept = 0u64;
+    let mut last = None;
+    while let Some(rx) = quiet.try_recv().unwrap() {
+        kept += 1;
+        last = Some(rx);
+    }
+    let last = last.unwrap();
+    // The newest are kept, the oldest gone, and the count says how many.
+    assert_eq!(last.frame, frame(0x100, &(sent - 1).to_be_bytes()));
+    assert!(kept <= 16 * 1024, "{kept} kept");
+    assert_eq!(kept + quiet.dropped(), u64::from(sent));
 }

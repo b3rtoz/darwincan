@@ -1,18 +1,21 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 
 //! One client connection: a control session, a raw socket, an ISO-TP
 //! channel, a broadcast manager or a J1939 socket, depending on what the
 //! client opens.
 
+use std::cell::Cell;
 use std::io;
 use std::io::{BufWriter, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
+use std::sync::mpsc::{
+    self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, TrySendError,
+};
 use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use darwincan_core::wire::{
     self, ErrorCode, IfaceInfo, LinkState, Message, MessageReader, SockOpt, ANY_INTERFACE,
@@ -31,6 +34,41 @@ use crate::{AddInterfaceError, RenameError, Shared};
 /// cannot keep up loses frames instead of stalling the bus, as with a full
 /// socket receive buffer on Linux.
 const OUT_QUEUE: usize = 16 * 1024;
+/// How long an answer may wait for room in a client's queue when it comes
+/// from a thread that serves more than that client's requests.
+const ANSWER_WAIT: Duration = Duration::from_millis(100);
+/// The most filters a raw socket takes, as `CAN_RAW_FILTER_MAX` on Linux:
+/// they are gone through for every frame on the interface.
+const RAW_FILTER_MAX: usize = 512;
+
+/// Queue an answer for a client from a thread that must not be held up by
+/// it. A client that awaits an answer is reading, so its queue has room
+/// at once or within moments; one whose queue stays full is not reading
+/// what it asked for. Returns false for that client, which the caller
+/// then drops (see [`hang_up`]).
+pub(crate) fn give_answer(out: &SyncSender<Message>, mut msg: Message) -> bool {
+    let give_up = Instant::now() + ANSWER_WAIT;
+    loop {
+        match out.try_send(msg) {
+            Ok(()) => return true,
+            Err(TrySendError::Disconnected(_)) => return false,
+            Err(TrySendError::Full(back)) => {
+                if Instant::now() >= give_up {
+                    return false;
+                }
+                msg = back;
+                thread::sleep(Duration::from_micros(200));
+            }
+        }
+    }
+}
+
+/// End a client's connection from another thread than its session's: the
+/// session sees the end of its input and tidies up as for any client that
+/// has gone.
+pub(crate) fn hang_up(stream: &UnixStream) {
+    let _ = stream.shutdown(Shutdown::Both);
+}
 
 /// Timers sleep until this close to their deadline, then spin. The timer
 /// thread is real-time (see `make_current_thread_realtime`) and is woken
@@ -285,6 +323,7 @@ pub(crate) fn run(shared: Arc<Shared>, stream: UnixStream) {
 
     let mut reader = MessageReader::new(read_half);
     let mut mode = Mode::Control;
+    let opened = Cell::new(true);
 
     loop {
         let msg = match reader.read() {
@@ -405,9 +444,7 @@ pub(crate) fn run(shared: Arc<Shared>, stream: UnixStream) {
                         });
                         bus.add_sink(tap, || {});
                     }),
-                    || {
-                        let _ = out.send(Message::Ok);
-                    },
+                    || opened.set(out.try_send(Message::Ok).is_ok()),
                 );
                 mode = Mode::RawEverywhere { sink };
                 None
@@ -419,8 +456,10 @@ pub(crate) fn run(shared: Arc<Shared>, stream: UnixStream) {
                     bus.add_sink(sink.clone(), || {
                         // The state first, so that the client has it by
                         // the time it knows the socket is open.
-                        let _ = out.send(Message::LinkState(bus.link_state()));
-                        let _ = out.send(Message::Ok);
+                        opened.set(
+                            out.try_send(Message::LinkState(bus.link_state())).is_ok()
+                                && out.try_send(Message::Ok).is_ok(),
+                        );
                     });
                     mode = Mode::Raw { bus, sink };
                     None
@@ -449,9 +488,7 @@ pub(crate) fn run(shared: Arc<Shared>, stream: UnixStream) {
                         if spawned.is_err() {
                             Some(error(ErrorCode::Other, "could not start ISO-TP thread"))
                         } else {
-                            bus.add_sink(sink, || {
-                                let _ = out.send(Message::Ok);
-                            });
+                            bus.add_sink(sink, || opened.set(out.try_send(Message::Ok).is_ok()));
                             mode = Mode::IsoTp { bus, id, input };
                             None
                         }
@@ -503,8 +540,16 @@ pub(crate) fn run(shared: Arc<Shared>, stream: UnixStream) {
                 Mode::Raw { sink, .. } | Mode::RawEverywhere { sink },
                 Message::SetFilters(filters),
             ) => {
-                *sink.filters.write().unwrap() = filters;
-                Some(Message::Ok)
+                if filters.len() > RAW_FILTER_MAX {
+                    // In the place of the `Ok` the client waits for.
+                    Some(Message::Refused {
+                        code: ErrorCode::InvalidRequest,
+                        message: format!("a socket takes at most {RAW_FILTER_MAX} filters"),
+                    })
+                } else {
+                    *sink.filters.write().unwrap() = filters;
+                    Some(Message::Ok)
+                }
             }
             (
                 Mode::Raw { sink, .. } | Mode::RawEverywhere { sink },
@@ -551,9 +596,11 @@ pub(crate) fn run(shared: Arc<Shared>, stream: UnixStream) {
                     let spawned = {
                         let bus = bus.clone();
                         let out = out.clone();
-                        thread::Builder::new()
-                            .name("darwincand-bcm".into())
-                            .spawn(move || bcm_loop(bus, id, watched, input_rx, out))
+                        stream.try_clone().and_then(|client| {
+                            thread::Builder::new()
+                                .name("darwincand-bcm".into())
+                                .spawn(move || bcm_loop(bus, id, watched, input_rx, out, client))
+                        })
                     };
                     if spawned.is_err() {
                         Some(error(
@@ -561,9 +608,7 @@ pub(crate) fn run(shared: Arc<Shared>, stream: UnixStream) {
                             "could not start broadcast manager thread",
                         ))
                     } else {
-                        bus.add_sink(sink, || {
-                            let _ = out.send(Message::Ok);
-                        });
+                        bus.add_sink(sink, || opened.set(out.try_send(Message::Ok).is_ok()));
                         mode = Mode::Bcm { bus, id, input };
                         None
                     }
@@ -590,7 +635,12 @@ pub(crate) fn run(shared: Arc<Shared>, stream: UnixStream) {
                     (Some(bus), Ok(())) => {
                         let id = shared.next_id();
                         // The stack answers, once the socket is open.
-                        match shared.j1939.open(&shared, &bus, id, addr, out.clone()) {
+                        let node = stream.try_clone().ok().and_then(|client| {
+                            shared
+                                .j1939
+                                .open(&shared, &bus, id, addr, out.clone(), client)
+                        });
+                        match node {
                             Some(node) => {
                                 mode = Mode::J1939 { id, node };
                                 None
@@ -632,6 +682,13 @@ pub(crate) fn run(shared: Arc<Shared>, stream: UnixStream) {
             if out.send(reply).is_err() {
                 break;
             }
+        }
+        // An open is acknowledged while the interface's list of sockets
+        // is held, where nothing may wait. The queue of a client that has
+        // only just opened is full only if it has been filling it without
+        // reading, and such a client is dropped.
+        if !opened.get() {
+            break;
         }
     }
 
@@ -755,7 +812,7 @@ fn isotp_loop(
             Some(IsoInput::Dropped) => tp.abort_send(),
             Some(IsoInput::Send(data)) => {
                 if let Err(reason) = tp.send(data, now_ns()) {
-                    let _ = out.try_send(Message::IsoTpFailed { tx: true, reason });
+                    let _ = give_answer(&out, Message::IsoTpFailed { tx: true, reason });
                 }
             }
             Some(IsoInput::Close) => return,
@@ -789,7 +846,16 @@ fn isotp_loop(
                 Event::TxFailed(reason) => Message::IsoTpFailed { tx: true, reason },
                 Event::RxFailed(reason) => Message::IsoTpFailed { tx: false, reason },
             };
-            let _ = out.try_send(msg);
+            // The end of a send is waited for: it is not dropped for a
+            // queue that is full at this moment, as received data is.
+            if matches!(
+                msg,
+                Message::IsoTpTxDone | Message::IsoTpFailed { tx: true, .. }
+            ) {
+                let _ = give_answer(&out, msg);
+            } else {
+                let _ = out.try_send(msg);
+            }
         }
     }
 }
@@ -801,6 +867,7 @@ fn bcm_loop(
     watched: Arc<RwLock<Vec<(u32, bool)>>>,
     input: Receiver<BcmInput>,
     out: SyncSender<Message>,
+    client: UnixStream,
 ) {
     make_current_thread_realtime();
     let mut bcm = Bcm::new();
@@ -862,8 +929,11 @@ fn bcm_loop(
                 }
             }
         }
-        if let Some(answer) = answer {
-            if out.send(answer).is_err() {
+        if let Some(msg) = answer {
+            // Not without limit: the jobs' timers run on this thread, and
+            // requests and watched frames queue up behind it.
+            if !give_answer(&out, msg) {
+                hang_up(&client);
                 return;
             }
         }

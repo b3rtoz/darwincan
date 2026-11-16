@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! The C API: the functions and types declared in `include/darwincan.h`.
 //!
 //! Frames, filters and flags are laid out exactly as in Linux's
@@ -247,6 +249,23 @@ pub struct dcan_isotp {
     sending: Mutex<()>,
 }
 
+/// The most messages kept for a program that sends on a channel and
+/// never receives; beyond it the oldest go.
+const ISOTP_HELD_MAX: usize = 1024;
+
+/// The most filters a socket takes, raw (`CAN_RAW_FILTER_MAX`) or J1939
+/// (`J1939_FILTER_MAX`). Checked before the caller's array is read.
+const FILTER_MAX: usize = 512;
+
+impl IsoTpState {
+    fn keep(&mut self, received: Result<(Vec<u8>, u64), IsoTpFailure>) {
+        if self.received.len() >= ISOTP_HELD_MAX {
+            self.received.pop_front();
+        }
+        self.received.push_back(received);
+    }
+}
+
 #[derive(Default)]
 struct IsoTpState {
     /// Messages and receive failures not yet handed to a receive call.
@@ -279,6 +298,9 @@ impl dcan_isotp {
             match wanted {
                 Wanted::Message => {
                     if let Some(message) = state.received.pop_front() {
+                        if state.received.is_empty() {
+                            self.sock.hold(false);
+                        }
                         return Ok(Some(Taken::Message(message)));
                     }
                 }
@@ -332,9 +354,13 @@ impl dcan_isotp {
             self.changed.notify_all();
             match event? {
                 Some(IsoTpEvent::Data { data, timestamp_ns }) => {
-                    state.received.push_back(Ok((data, timestamp_ns)))
+                    state.keep(Ok((data, timestamp_ns)));
+                    self.sock.hold(true);
                 }
-                Some(IsoTpEvent::RxFailed(reason)) => state.received.push_back(Err(reason)),
+                Some(IsoTpEvent::RxFailed(reason)) => {
+                    state.keep(Err(reason));
+                    self.sock.hold(true);
+                }
                 Some(IsoTpEvent::TxDone) => state.sent = Some(Ok(())),
                 Some(IsoTpEvent::TxFailed(reason)) => state.sent = Some(Err(reason)),
                 None if left == 0 => return Ok(None),
@@ -762,9 +788,12 @@ pub unsafe extern "C" fn dcan_raw_set_filters(
         if filters.is_null() && count != 0 {
             return invalid("filters is a null pointer");
         }
+        if count > FILTER_MAX {
+            return invalid("a socket takes at most 512 filters");
+        }
         let filters: Vec<Filter> = (0..count)
             .map(|i| {
-                let f = &*filters.add(i);
+                let f = filters.add(i).read_unaligned();
                 Filter::new(f.can_id, f.can_mask)
             })
             .collect();
@@ -1090,7 +1119,7 @@ pub unsafe extern "C" fn dcan_bcm_send(
         if msg.is_null() || size < std::mem::size_of::<bcm_msg_head>() {
             return invalid("the message is shorter than a struct bcm_msg_head");
         }
-        let head = msg.read();
+        let head = msg.read_unaligned();
         let count = head.nframes as usize;
         let each = bcm_frame_size(head.flags);
         if count > MAX_FRAMES + 1 || size != std::mem::size_of::<bcm_msg_head>() + count * each {
@@ -1105,13 +1134,13 @@ pub unsafe extern "C" fn dcan_bcm_send(
         for i in 0..count {
             let at = first.add(i * each);
             let frame = if each == CANFD_MTU as usize {
-                let f = at.cast::<canfd_frame>().read();
+                let f = at.cast::<canfd_frame>().read_unaligned();
                 f.data
                     .get(..usize::from(f.len))
                     .ok_or(crate::FrameError::DataTooLong)
                     .and_then(|data| Frame::from_raw(f.can_id, f.flags | CANFD_FDF, data))
             } else {
-                let f = at.cast::<can_frame>().read();
+                let f = at.cast::<can_frame>().read_unaligned();
                 f.data
                     .get(..usize::from(f.len))
                     .ok_or(crate::FrameError::DataTooLong)
@@ -1174,7 +1203,7 @@ pub unsafe extern "C" fn dcan_bcm_recv(
             Err(e) => return failed(&e),
         };
         let m = &report.msg;
-        msg.write(bcm_msg_head {
+        msg.write_unaligned(bcm_msg_head {
             opcode: m.opcode,
             flags: m.flags,
             count: m.count,
@@ -1446,9 +1475,12 @@ pub unsafe extern "C" fn dcan_j1939_set_filters(
         if filters.is_null() && count != 0 {
             return invalid("filters is a null pointer");
         }
+        if count > FILTER_MAX {
+            return invalid("a socket takes at most 512 filters");
+        }
         let filters: Vec<J1939Filter> = (0..count)
             .map(|i| {
-                let f = filters.add(i).read();
+                let f = filters.add(i).read_unaligned();
                 J1939Filter {
                     name: f.name,
                     name_mask: f.name_mask,

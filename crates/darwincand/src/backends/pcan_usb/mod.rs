@@ -167,6 +167,9 @@ impl Adapter {
 struct Unreported {
     frames: VecDeque<(u8, u32)>,
     next_byte: u8,
+    /// Frames given up as never to be reported, since the caller last
+    /// asked: each still holds a place in the transmit window.
+    given_up: usize,
 }
 
 impl Unreported {
@@ -190,7 +193,13 @@ impl Unreported {
             None => 0,
         };
         self.frames.drain(..at);
+        self.given_up += at;
         self.frames.pop_front().map(|(_, token)| token)
+    }
+
+    /// How many frames were given up since this was last asked.
+    fn given_up(&mut self) -> usize {
+        std::mem::take(&mut self.given_up)
     }
 }
 
@@ -416,7 +425,16 @@ impl RxState {
                 Event::Frame { frame, .. } => handle.receive(&frame, ts),
                 Event::Sent { frame, id, .. } => {
                     adapter.transmitter.confirmed();
-                    match adapter.unreported.lock().unwrap().take(id) {
+                    let (token, given_up) = {
+                        let mut unreported = adapter.unreported.lock().unwrap();
+                        (unreported.take(id), unreported.given_up())
+                    };
+                    // A frame passed over will not be reported: its place
+                    // in the window would otherwise be lost for good.
+                    for _ in 0..given_up {
+                        adapter.transmitter.confirmed();
+                    }
+                    match token {
                         Some(token) => handle.transmitted(token, &frame, ts),
                         // Handed over before the last restart: it was on
                         // the bus all the same.
@@ -537,8 +555,11 @@ mod tests {
         let (a, b, c) = (u.add(10), u.add(11), u.add(12));
         assert_eq!((a, b, c), (0x80, 0x81, 0x82));
         assert_eq!(u.take(Some(a)), Some(10));
+        assert_eq!(u.given_up(), 0);
         // A report for a later frame: the one before it is given up.
         assert_eq!(u.take(Some(c)), Some(12));
+        assert_eq!(u.given_up(), 1);
+        assert_eq!(u.given_up(), 0);
         assert_eq!(u.take(Some(b)), None);
         // A remote frame's report carries no byte: it is the oldest.
         let d = u.add(13);

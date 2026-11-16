@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Read a data identifier from an ECU over ISO-TP (UDS service 0x22).
 //!
 //!     cargo run --example uds_read -- vcan0 7E0 7E8 F190

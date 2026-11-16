@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 
 //! The broadcast manager: jobs that send frames cyclically and jobs that
 //! watch received frames, for one client. No I/O and no clock: the caller
@@ -74,6 +74,12 @@ struct RxJob {
     release_at: Option<u64>,
     last_report: Option<u64>,
 }
+
+/// The most transmit jobs, and the most receive jobs, one client may
+/// have. Linux sets no limit; here every job is looked at whenever a
+/// timer is due and for every frame received, on a real-time thread, so
+/// an endless list would be felt by the whole interface.
+const MAX_JOBS: usize = 4096;
 
 #[derive(Default)]
 pub(crate) struct Bcm {
@@ -341,6 +347,9 @@ impl Bcm {
                 job
             }
             None => {
+                if self.tx.len() >= MAX_JOBS {
+                    return Err("too many transmit jobs");
+                }
                 self.tx.push(TxJob {
                     can_id: msg.can_id,
                     fd,
@@ -419,6 +428,9 @@ impl Bcm {
                 job
             }
             None => {
+                if self.rx.len() >= MAX_JOBS {
+                    return Err("too many receive jobs");
+                }
                 self.rx.push(RxJob {
                     can_id: msg.can_id,
                     fd,

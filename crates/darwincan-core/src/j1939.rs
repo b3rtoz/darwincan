@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! SAE J1939 addressing, as `<linux/can/j1939.h>` has it: addresses, NAMEs
 //! and parameter group numbers, the filter of a J1939 socket, and what such
 //! a socket receives.

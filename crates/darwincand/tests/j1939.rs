@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 
 //! End-to-end tests of J1939 sockets: a real daemon on a temporary socket,
 //! real clients.
@@ -428,4 +428,57 @@ fn an_interface_stack_ends_with_its_last_socket_and_starts_again() {
     for t in threads {
         t.join().unwrap();
     }
+}
+
+#[test]
+fn a_client_that_does_not_read_its_answers_is_dropped_and_holds_nobody_up() {
+    use darwincan_core::wire::Message;
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+
+    let (_d, path) = start();
+    let good = open(&path, 0x80);
+    let peer = open(&path, 0x90);
+    peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+
+    // By hand, to be able to misbehave: open a socket on the same
+    // interface, then ask for far more answers than a queue holds and
+    // read none of them.
+    let mut rude = UnixStream::connect(&*path).unwrap();
+    let mut request = Vec::new();
+    Message::OpenJ1939 {
+        ifname: "vcan0".into(),
+        addr: J1939Addr::address(0x70),
+    }
+    .encode(&mut request);
+    let mut flood = Vec::new();
+    for _ in 0..1000 {
+        Message::Sync.encode(&mut flood);
+    }
+    rude.write_all(&request).unwrap();
+    rude.set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let flooding = thread::spawn(move || {
+        // Until the daemon hangs up, which shows as a failed write.
+        for _ in 0..2000 {
+            if rude.write_all(&flood).is_err() {
+                return true;
+            }
+        }
+        false
+    });
+
+    // The interface's one J1939 thread serves the others all the while.
+    let begun = Instant::now();
+    for n in 0..50u8 {
+        good.send_to(&[n; 8], &J1939Addr::new(0x90, 0xEF00))
+            .unwrap();
+        assert_eq!(peer.recv().unwrap().data, [n; 8]);
+    }
+    assert!(flooding.join().unwrap(), "the daemon kept the client on");
+    assert!(begun.elapsed() < Duration::from_secs(20));
+    // And after it.
+    good.send_to(&[0xAA; 20], &J1939Addr::new(0x90, 0xEF00))
+        .unwrap();
+    assert_eq!(peer.recv().unwrap().data, [0xAA; 20]);
 }

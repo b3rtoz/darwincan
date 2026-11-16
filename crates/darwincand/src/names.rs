@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 
 //! The names of hardware interfaces, kept from one run of the daemon to
 //! the next.
@@ -70,6 +70,11 @@ impl Names {
         };
         let mut text = String::from(HEADER);
         for (name, identity) in &self.entries {
+            // An identity is made from what a device says of itself.
+            let identity: String = identity
+                .chars()
+                .filter(|c| !c.is_control() && *c != '=')
+                .collect();
             text.push_str(&format!("{name} = {identity}\n"));
         }
         if let Some(dir) = path.parent() {

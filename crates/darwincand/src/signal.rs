@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 
 //! The signals that ask the daemon to stop (interrupt, terminate, hang-up),
 //! received by one thread instead of killing the process outright, so the

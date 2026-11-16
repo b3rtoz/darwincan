@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! ISO-TP (ISO 15765-2) for classic CAN and CAN FD, normal addressing.
 //!
 //! [`IsoTp`] is a sans-I/O state machine: it never touches a bus or a clock.

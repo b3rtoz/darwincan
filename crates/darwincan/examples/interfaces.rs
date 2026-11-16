@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! List the daemon's interfaces, and optionally put one on the bus.
 //!
 //!     cargo run --example interfaces

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Send and receive SAE J1939 messages.
 //!
 //!     cargo run --example j1939 -- vcan0

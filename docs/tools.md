@@ -1,6 +1,6 @@
 # The daemon and the command-line tools
 
-How to run `darwincand`, manage interfaces, and use the tools. If you know can-utils and `ip link` from Linux, most of this is already familiar: the tools take the same command lines and print the same output.
+This page explains how to run `darwincand`, manage interfaces and use the tools. If you know can-utils and `ip link` from Linux, most of this is already familiar: the tools take the same command lines and print the same output.
 
 ## The daemon
 
@@ -10,31 +10,31 @@ How to run `darwincand`, manage interfaces, and use the tools. If you know can-u
 darwincand &          # run it by hand; creates the virtual interface vcan0
 ```
 
-To have it running from login on, install it as a launch agent:
+To have the daemon running from the moment you log in, install it as a launch agent:
 
 ```sh
 sudo make install     # the daemon, tools and C library into /usr/local
 darwincand install    # add daemon options here, for example --vcan vcan1
 ```
 
-This registers the agent `org.darwincan.darwincand` for your user. launchd creates the socket and hands it to the daemon, so the tools work from login on with nothing to start, a program that connects while the daemon is still starting waits instead of failing, and the daemon is started again if it ever exits. Its messages go to `~/Library/Logs/darwincand.log`.
+This registers the agent `org.darwincan.darwincand` for your user account. launchd creates the socket and hands it to the daemon. As a result, the tools work from login onwards with nothing to start by hand, a program that connects while the daemon is still starting waits instead of failing, and the daemon is started again if it ever exits. The daemon's messages go to `~/Library/Logs/darwincand.log`.
 
-Run `darwincand install` again after rebuilding into a different path. `darwincand uninstall` removes the agent, and `darwincand install --print` shows the property list without installing it.
+Run `darwincand install` again if the `darwincand` executable moves to a different path, for example after building or installing somewhere else. `darwincand uninstall` removes the agent, and `darwincand install --print` shows the property list without installing it.
 
 | Option | Meaning |
 |---|---|
-| `--socket <path>` | Listen on this Unix socket. Default: `$DARWINCAN_SOCKET`, else `~/Library/Application Support/darwincan/darwincand.sock` |
-| `--vcan <name>` | Create a virtual interface; may be repeated. Default: `vcan0` |
+| `--socket <path>` | Listen on this Unix socket. The default is `$DARWINCAN_SOCKET` if it is set, and otherwise `~/Library/Application Support/darwincan/darwincand.sock` |
+| `--vcan <name>` | Create a virtual interface. The option may be repeated. The default is `vcan0` |
 | `--no-vcan` | Do not create `vcan0` |
 | `--no-hardware` | Do not look for USB adapters |
-| `--names <file>` | Where the names of hardware interfaces are kept |
-| `--timing-log <ms>` | Log whatever holds a frame up for longer than this, for finding timing faults |
+| `--names <file>` | The file in which the names of hardware interfaces are kept |
+| `--timing-log <ms>` | Log anything that holds a frame up for longer than this, to help find timing faults |
 
-The daemon and the tools run as you, without `sudo`. The daemon and everything that talks to it must come from the same build: they check each other's protocol version and say so when it differs.
+The daemon and the tools run under your own user account, without `sudo`. The daemon and everything that talks to it must come from the same build: they check each other's protocol version and report it when the versions differ.
 
 ## Interfaces
 
-An interface is a name inside the daemon, not a macOS network interface: `ifconfig` does not show it. `canctl` manages them and takes the wording of `ip link`.
+An interface is a name inside the daemon, not a macOS network interface, so `ifconfig` does not show it. `canctl` manages interfaces and takes the same wording as `ip link`.
 
 ```sh
 canctl link show                         # or: canctl list
@@ -54,15 +54,15 @@ canctl link set can0 name chassis        # rename; the adapter keeps the name
 |---|---|
 | `bitrate <bps>` | Nominal bitrate |
 | `dbitrate <bps>` | CAN FD data bitrate; enables CAN FD |
-| `sample-point <0.xxx>`, `dsample-point <0.xxx>` | Sample points; chosen by bitrate if not given |
+| `sample-point <0.xxx>`, `dsample-point <0.xxx>` | Sample points. If they are not given, they are chosen according to the bitrate |
 | `listen-only on\|off` | Never transmit or acknowledge |
-| `fd on\|off` | `on` needs `dbitrate`; `off` drops it |
+| `fd on\|off` | `on` needs `dbitrate` to be given as well; `off` removes the data bitrate |
 
 Settings are remembered while an interface is down, so the two-step form (`link set can0 type can bitrate 500000`, then `link set can0 up`) works too. A hardware interface starts down when its adapter is attached. A virtual interface is up as soon as it exists and carries CAN FD frames without further settings.
 
 `canctl` also has short forms of its own: `canctl up can0 bitrate 500000`, `canctl down can0`, `canctl add-vcan vcan1`.
 
-Which adapters are supported, and how interface names are assigned and kept, is in [hardware.md](hardware.md).
+[hardware.md](hardware.md) describes which adapters are supported and how interface names are assigned and kept.
 
 ## The tools
 
@@ -93,26 +93,26 @@ isotprecv -s 7E8 -d 7E0 vcan0 &
 echo 22 F1 90 | isotpsend -s 7E0 -d 7E8 vcan0
 ```
 
-The ISO-TP tools take the addresses as `-s <transmit id> -d <receive id>`, and `-p` (padding), `-b` (block size), `-m` (STmin) and `-L` (CAN FD link layer) as on Linux.
+The ISO-TP tools take their addresses as `-s <transmit id> -d <receive id>`, and they take `-p` (padding), `-b` (block size), `-m` (STmin) and `-L` (CAN FD link layer) as on Linux.
 
 ## Coming from Linux
 
 | Linux | Here |
 |---|---|
-| `candump`, `cansend`, `cangen`, `canplayer`, `isotpsend`, `isotprecv` | The same names, options, and frame and filter syntax |
+| `candump`, `cansend`, `cangen`, `canplayer`, `isotpsend`, `isotprecv` | The same names and options, and the same syntax for frames and filters |
 | `ip link ...` | `canctl link ...`: replace `ip` with `canctl` |
-| `sudo modprobe vcan` | Not needed |
-| The kernel is always there | `darwincand install`, once |
+| `sudo modprobe vcan` | This step is not needed |
+| The kernel is always there | Run `darwincand install` once, so that the daemon is always there too |
 
-Differences worth knowing:
+The following differences are worth knowing:
 
-- **No `sudo`.** The daemon and the tools run as you.
+- **No `sudo` is needed.** The daemon and the tools run under your own user account.
 - **`link set vcan0 up` is accepted and does nothing**: a virtual interface is always up.
-- **`link set can0 up type can bitrate ...` on an interface that is already up reconfigures it.** Changing settings without `up` needs the interface down first, as on Linux.
-- **`candump -e` receives all error frames by itself.** Linux also needs a `#<mask>` filter.
+- **`link set can0 up type can bitrate ...` on an interface that is already up reconfigures it.** Changing settings without `up` requires the interface to be down first, as on Linux.
+- **`candump -e` receives all error frames by itself.** On Linux it also needs a `#<mask>` filter.
 - **`canplayer` sends each frame at its logged time** instead of polling every `-g` milliseconds, so `-g` has no effect.
-- **A frame you send on a hardware interface is shown once it was on the bus**, with the adapter's timestamp; a frame nobody acknowledges is not shown.
-- **Not available:** `candump -x`, `-c`, `-i`, `-S`, `-d`, `-D` and `-r`; `cangen -a`, `-t`, `-X` and `-8`; `canplayer -i`; bit timing by segments (`tq`, `prop-seg` and so on), `restart-ms`, `loopback on`, `one-shot on` and `triple-sampling on`. Each is refused with a message, never silently ignored.
+- **A frame you send on a hardware interface is shown once it has been on the bus**, with the adapter's timestamp. A frame that nobody acknowledges is not shown.
+- **The following are not available:** `candump -x`, `-c`, `-i`, `-S`, `-d`, `-D` and `-r`; `cangen -a`, `-t`, `-X` and `-8`; `canplayer -i`; bit timing by segments (`tq`, `prop-seg` and so on), `restart-ms`, `loopback on`, `one-shot on` and `triple-sampling on`. Each is refused with a message and is never silently ignored.
 
 ## Troubleshooting
 
@@ -120,11 +120,11 @@ Differences worth knowing:
 |---|---|
 | `cannot reach darwincand (...); is the daemon running?` | Start it with `darwincand &`, or install the launch agent. If you set `DARWINCAN_SOCKET`, the daemon and the tools need the same value |
 | The daemon fails to bind its socket | macOS limits Unix socket paths to about 100 bytes; use a shorter `DARWINCAN_SOCKET` |
-| An adapter is plugged in but no interface appears | Another program is probably holding it (PCAN-View, a MacCAN-based tool, Kvaser CANlib); quit it and plug the adapter in again. The daemon's messages say what it saw |
-| A tool says the daemon and the program come from different versions | Rebuild both from the same source and restart the daemon; run `darwincand install` again if it is a launch agent |
-| `can0 is down` | `canctl link set can0 up type can bitrate ...` |
-| `can0 is bus-off; take it down and up again` | A fault on the bus (usually a short) drove the controller off it. `canctl link set can0 down`, then `up`. `candump -e` shows the error states that led there |
+| An adapter is plugged in but no interface appears | Another program is probably holding the adapter (PCAN-View, a MacCAN-based tool, Kvaser CANlib). Quit that program and plug the adapter in again. The daemon's messages say what it saw |
+| A tool says the daemon and the program come from different versions | Rebuild both from the same source and restart the daemon. If the daemon runs as a launch agent, run `darwincand install` again |
+| `can0 is down` | Bring the interface up with `canctl link set can0 up type can bitrate ...` |
+| `can0 is bus-off; take it down and up again` | A fault on the bus (usually a short) drove the controller off the bus. Run `canctl link set can0 down`, then `up`. `candump -e` shows the error states that led there |
 | `adapter transmit buffer is full` | Nothing on the bus acknowledges your frames (wrong bitrate, no other node, no termination), or other traffic keeps winning the bus |
-| An interface is silent after the Mac slept | The daemon restores interfaces after a wake and logs it. If one stays silent, take it down and up, or keep the Mac awake with `caffeinate -i` |
+| An interface is silent after the Mac slept | The daemon restores interfaces after the Mac wakes, and logs that it has done so. If an interface stays silent, take it down and up, or keep the Mac awake with `caffeinate -i` |
 | `candump` misses frames under heavy load | A program that reads too slowly loses frames rather than delay the bus. Log with `candump -l` instead of printing to a terminal |
 | Which adapter is `can0`? | `canctl list` names the adapter and channel behind each interface |

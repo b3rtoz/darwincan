@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 /// How a hardware interface joins the bus (the `ip link set canX up type can
 /// ...` parameters on Linux).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

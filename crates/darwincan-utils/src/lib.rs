@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Helpers shared by the command-line tools.
 
 use std::fmt::Display;

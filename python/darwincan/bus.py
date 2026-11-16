@@ -591,12 +591,15 @@ class DarwincanBus(BusABC):
         )
 
     def _close_handles(self) -> None:
+        # The socket first: a cyclic task started from another thread from
+        # here on finds the bus closed, and cannot open a broadcast
+        # manager that nobody would close.
+        self._sock.close()
         with self._bcm_lock:
             bcm, self._bcm = self._bcm, None
             self._bcm_jobs.clear()
         if bcm is not None:
             bcm.close()
-        self._sock.close()
         with self._control_lock:
             control, self._control = self._control, None
         if control is not None:

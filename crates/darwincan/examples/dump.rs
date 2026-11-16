@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Print the frames on an interface, with the daemon's timestamps.
 //!
 //!     cargo run --example dump -- vcan0 [count]

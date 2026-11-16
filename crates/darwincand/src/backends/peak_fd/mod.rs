@@ -249,6 +249,14 @@ impl Channel {
             })
             .transpose()
             .map_err(invalid)?;
+        if data.is_some() && self.device.fw.fw_version[0] < 2 {
+            // It would be taken, and every frame sent in a format an ISO
+            // CAN FD bus answers with error frames.
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this adapter's firmware (older than 2.0) only does the pre-ISO CAN FD format; update it to use CAN FD",
+            ));
+        }
         if let Some(data) = &data {
             if data.bitrate < nominal.bitrate {
                 return Err(invalid(

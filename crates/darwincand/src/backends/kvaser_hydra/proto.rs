@@ -438,7 +438,7 @@ pub struct Clock {
 
 impl Clock {
     pub fn ns(&self, ticks: u64) -> u64 {
-        (u128::from(ticks) * 1000 / u128::from(self.ticks_per_us)) as u64
+        u64::try_from(u128::from(ticks) * 1000 / u128::from(self.ticks_per_us)).unwrap_or(u64::MAX)
     }
 }
 

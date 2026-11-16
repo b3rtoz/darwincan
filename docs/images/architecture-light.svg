@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 760" width="960" height="760" role="img" aria-labelledby="t d" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<title id="t">darwinCAN architecture</title>
+<desc id="d">Any number of programs (the command-line tools, your own program through the Rust or C library, and Python through python-can) connect over a Unix socket to the darwincand daemon. The daemon does frame fan-out, filtering, timestamps, ISO-TP, the broadcast manager and J1939, and exposes interfaces: a virtual vcan0, and can0, can1 and so on for adapter channels, which its hardware backends drive over USB. The USB CAN adapter is claimed once, by the daemon, and is connected to the CAN bus.</desc>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#6e7781"/></marker></defs>
+<text x="480" y="30" font-size="15" fill="#59636e" font-weight="400" text-anchor="middle">Any number of programs, at the same time</text>
+<rect x="40" y="48" width="280" height="104" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<text x="180" y="80" font-size="17" fill="#1f2328" font-weight="600" text-anchor="middle">Command-line tools</text>
+<text x="180" y="106" font-size="13" fill="#59636e" font-weight="400" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">candump · cansend · cangen</text>
+<text x="180" y="127" font-size="13" fill="#59636e" font-weight="400" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">canplayer · isotpsend · canctl</text>
+<rect x="340" y="48" width="280" height="104" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<text x="480" y="80" font-size="17" fill="#1f2328" font-weight="600" text-anchor="middle">Your program</text>
+<text x="480" y="106" font-size="13" fill="#59636e" font-weight="400" text-anchor="middle">Rust crate</text>
+<text x="480" y="127" font-size="13" fill="#59636e" font-weight="400" text-anchor="middle">C library with the Linux structs</text>
+<rect x="640" y="48" width="280" height="104" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<text x="780" y="80" font-size="17" fill="#1f2328" font-weight="600" text-anchor="middle">Python</text>
+<text x="780" y="106" font-size="13" fill="#59636e" font-weight="400" text-anchor="middle">python-can interface</text>
+<text x="780" y="127" font-size="13" fill="#59636e" font-weight="400" text-anchor="middle">ISO-TP channels</text>
+<line x1="180" y1="156" x2="315.0" y2="244" stroke="#6e7781" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="480" y1="156" x2="480.0" y2="244" stroke="#6e7781" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="780" y1="156" x2="645.0" y2="244" stroke="#6e7781" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<text x="596" y="206" font-size="13" fill="#59636e" font-weight="400" text-anchor="start">Unix socket</text>
+<rect x="150" y="248" width="660" height="176" rx="10" fill="#ddf4ff" stroke="#0969da" stroke-width="2"/>
+<text x="480" y="286" font-size="22" fill="#1f2328" font-weight="700" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">darwincand</text>
+<text x="480" y="312" font-size="13.5" fill="#59636e" font-weight="400" text-anchor="middle">the daemon: owns the adapters and shares them</text>
+<rect x="172" y="336" width="148" height="34" rx="17" fill="#f6f8fa" stroke="#0969da" stroke-width="1"/>
+<text x="246.0" y="358" font-size="13" fill="#1f2328" font-weight="400" text-anchor="middle">Fan-out and filters</text>
+<rect x="334" y="336" width="104" height="34" rx="17" fill="#f6f8fa" stroke="#0969da" stroke-width="1"/>
+<text x="386.0" y="358" font-size="13" fill="#1f2328" font-weight="400" text-anchor="middle">Timestamps</text>
+<rect x="452" y="336" width="68" height="34" rx="17" fill="#f6f8fa" stroke="#0969da" stroke-width="1"/>
+<text x="486.0" y="358" font-size="13" fill="#1f2328" font-weight="400" text-anchor="middle">ISO-TP</text>
+<rect x="534" y="336" width="158" height="34" rx="17" fill="#f6f8fa" stroke="#0969da" stroke-width="1"/>
+<text x="613.0" y="358" font-size="13" fill="#1f2328" font-weight="400" text-anchor="middle">Broadcast manager</text>
+<rect x="706" y="336" width="78" height="34" rx="17" fill="#f6f8fa" stroke="#0969da" stroke-width="1"/>
+<text x="745.0" y="358" font-size="13" fill="#1f2328" font-weight="400" text-anchor="middle">J1939</text>
+<text x="480" y="402" font-size="13" fill="#59636e" font-weight="400" text-anchor="middle">Protocol timing runs here, on real-time threads, not in your program</text>
+<line x1="250" y1="428" x2="250" y2="486" stroke="#6e7781" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="520" y1="428" x2="520" y2="486" stroke="#6e7781" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="720" y1="428" x2="720" y2="486" stroke="#6e7781" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<rect x="150" y="490" width="200" height="76" rx="10" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/>
+<text x="250" y="522" font-size="17" fill="#1f2328" font-weight="600" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">vcan0</text>
+<text x="250" y="546" font-size="12.5" fill="#59636e" font-weight="400" text-anchor="middle">virtual: no hardware needed</text>
+<rect x="430" y="490" width="180" height="76" rx="10" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/>
+<text x="520" y="522" font-size="17" fill="#1f2328" font-weight="600" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">can0</text>
+<text x="520" y="546" font-size="12.5" fill="#59636e" font-weight="400" text-anchor="middle">adapter channel</text>
+<rect x="630" y="490" width="180" height="76" rx="10" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/>
+<text x="720" y="522" font-size="17" fill="#1f2328" font-weight="600" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">can1</text>
+<text x="720" y="546" font-size="12.5" fill="#59636e" font-weight="400" text-anchor="middle">adapter channel</text>
+<text x="134" y="532" font-size="13" fill="#59636e" font-weight="400" text-anchor="end">Interfaces</text>
+<line x1="520" y1="570" x2="560" y2="606" stroke="#6e7781" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="720" y1="570" x2="680" y2="606" stroke="#6e7781" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<rect x="430" y="610" width="380" height="66" rx="10" fill="#fff8c5" stroke="#9a6700" stroke-width="1.5"/>
+<text x="620" y="637" font-size="16" fill="#1f2328" font-weight="600" text-anchor="middle">USB CAN adapter</text>
+<text x="620" y="659" font-size="12.5" fill="#59636e" font-weight="400" text-anchor="middle">claimed once, by the daemon · PEAK, Kvaser</text>
+<text x="414" y="648" font-size="13" fill="#59636e" font-weight="400" text-anchor="end">USB</text>
+<line x1="620" y1="680" x2="620" y2="716" stroke="#6e7781" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="150" y1="722" x2="810" y2="722" stroke="#bc4c00" stroke-width="4" stroke-linecap="round"/>
+<line x1="230" y1="722" x2="230" y2="700" stroke="#bc4c00" stroke-width="2"/>
+<rect x="196" y="674" width="68" height="26" rx="6" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<text x="230" y="692" font-size="12" fill="#59636e" font-weight="400" text-anchor="middle">ECU</text>
+<line x1="330" y1="722" x2="330" y2="700" stroke="#bc4c00" stroke-width="2"/>
+<rect x="296" y="674" width="68" height="26" rx="6" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<text x="330" y="692" font-size="12" fill="#59636e" font-weight="400" text-anchor="middle">ECU</text>
+<text x="480" y="748" font-size="14" fill="#bc4c00" font-weight="600" text-anchor="middle">CAN bus</text>
+</svg>

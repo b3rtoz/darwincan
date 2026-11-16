@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Messages exchanged between `darwincand` and its clients over a Unix stream
 //! socket.
 //!
@@ -937,6 +939,26 @@ impl Message {
 ///
 /// Bytes of a partially received message are kept across calls, so a read
 /// timeout on the underlying stream never desynchronises the framing.
+/// The longest payload of everything but the messages that carry a
+/// transport protocol's data or the list of interfaces: the largest of the
+/// rest, a broadcast manager message of 257 CAN FD frames, is a third of
+/// this.
+const MAX_SMALL_PAYLOAD: usize = 64 * 1024;
+
+/// The longest payload a message of type `ty` can have. Checked on the
+/// header alone, so that a peer cannot make the reader hold megabytes
+/// for a message that never has them.
+fn max_payload(ty: u16) -> usize {
+    match ty {
+        T_ISOTP_SEND | T_ISOTP_DATA | T_J1939_SEND | T_J1939_DATA | T_IFACES => MAX_PAYLOAD,
+        _ => MAX_SMALL_PAYLOAD,
+    }
+}
+
+/// What the reader's buffer is cut back to once a long message has gone
+/// through it.
+const READER_KEEPS: usize = 64 * 1024;
+
 pub struct MessageReader<R> {
     inner: R,
     buf: Vec<u8>,
@@ -963,10 +985,7 @@ impl<R: Read> MessageReader<R> {
             if let Some(msg) = self.try_parse()? {
                 return Ok(msg);
             }
-            if self.pos > 0 {
-                self.buf.drain(..self.pos);
-                self.pos = 0;
-            }
+            self.compact();
             let mut chunk = [0u8; 16 * 1024];
             let n = match self.inner.read(&mut chunk) {
                 Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
@@ -988,10 +1007,7 @@ impl<R: Read> MessageReader<R> {
     /// [`buffered`](Self::buffered). Blocks like one `read` on the stream,
     /// and like it fails with `Interrupted` when a signal cuts it short.
     pub fn fill(&mut self) -> io::Result<()> {
-        if self.pos > 0 {
-            self.buf.drain(..self.pos);
-            self.pos = 0;
-        }
+        self.compact();
         let mut chunk = [0u8; 16 * 1024];
         match self.inner.read(&mut chunk)? {
             0 => Err(io::ErrorKind::UnexpectedEof.into()),
@@ -999,6 +1015,18 @@ impl<R: Read> MessageReader<R> {
                 self.buf.extend_from_slice(&chunk[..n]);
                 Ok(())
             }
+        }
+    }
+
+    /// Drop what has been parsed, and give back the room a long message
+    /// took once it is no longer needed.
+    fn compact(&mut self) {
+        if self.pos > 0 {
+            self.buf.drain(..self.pos);
+            self.pos = 0;
+        }
+        if self.buf.capacity() > 4 * READER_KEEPS && self.buf.len() <= READER_KEEPS {
+            self.buf.shrink_to(READER_KEEPS);
         }
     }
 
@@ -1019,7 +1047,7 @@ impl<R: Read> MessageReader<R> {
                 },
             ));
         }
-        if len > MAX_PAYLOAD {
+        if len > max_payload(ty) {
             return Err(bad("message payload too large"));
         }
         if avail.len() < HEADER_LEN + len {

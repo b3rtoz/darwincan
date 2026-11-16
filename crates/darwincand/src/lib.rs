@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 
 //! The darwinCAN daemon.
 //!
@@ -30,7 +30,7 @@ pub mod timing;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -484,19 +484,77 @@ impl Daemon {
     /// Accept and serve clients until the listener fails. Each client gets
     /// its own threads.
     pub fn serve(&self, listener: UnixListener) -> io::Result<()> {
+        // One client must not be able to end the daemon for the others: a
+        // connection that cannot be accepted or served (no descriptors
+        // left, no thread to be had, a client gone again already) is
+        // given up and the next one waited for. Only a listener that
+        // fails every time is fatal.
+        const GIVE_UP_AFTER: u32 = 1000;
+        let mut failures = 0;
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
+                    failures = 0;
                     let shared = self.shared.clone();
-                    thread::Builder::new()
+                    let spawned = thread::Builder::new()
                         .name("darwincand-client".into())
-                        .spawn(move || session::run(shared, stream))?;
+                        .spawn(move || session::run(shared, stream));
+                    if let Err(e) = spawned {
+                        backends::log(format!("cannot serve a client: {e}"));
+                    }
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e),
+                Err(e) => {
+                    failures += 1;
+                    if failures >= GIVE_UP_AFTER {
+                        return Err(e);
+                    }
+                    if failures == 1 {
+                        backends::log(format!("cannot accept a client: {e}"));
+                    }
+                    // Out of descriptors, most likely: wait for a client
+                    // to go rather than spin.
+                    thread::sleep(Duration::from_millis(10));
+                }
             }
         }
         Ok(())
+    }
+}
+
+extern "C" {
+    fn getrlimit(resource: i32, limit: *mut ResourceLimit) -> i32;
+    fn setrlimit(resource: i32, limit: *const ResourceLimit) -> i32;
+}
+
+/// `struct rlimit` of `<sys/resource.h>`.
+#[repr(C)]
+struct ResourceLimit {
+    current: u64,
+    maximum: u64,
+}
+
+const RLIMIT_NOFILE: i32 = 8;
+/// The most open files macOS lets a process ask for (`OPEN_MAX`).
+const OPEN_MAX: u64 = 10240;
+
+/// Let the daemon have as many open files as the system allows. Every
+/// client connection takes three descriptors, and a process started from
+/// a shell or by launchd is given 256.
+pub fn raise_descriptor_limit() {
+    let mut limit = ResourceLimit {
+        current: 0,
+        maximum: 0,
+    };
+    // SAFETY: both calls are given a valid `struct rlimit`.
+    unsafe {
+        if getrlimit(RLIMIT_NOFILE, &mut limit) == 0 {
+            let wanted = limit.maximum.min(OPEN_MAX);
+            if wanted > limit.current {
+                limit.current = wanted;
+                setrlimit(RLIMIT_NOFILE, &limit);
+            }
+        }
     }
 }
 
@@ -509,7 +567,15 @@ pub fn bind(path: &Path) -> io::Result<UnixListener> {
             fs::create_dir_all(dir)?;
         }
     }
-    if path.exists() {
+    if let Ok(found) = fs::symlink_metadata(path) {
+        // Only ever a socket is removed: a mistyped path must not cost
+        // someone a file.
+        if !found.file_type().is_socket() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} exists and is not a socket", path.display()),
+            ));
+        }
         if UnixStream::connect(path).is_ok() {
             return Err(io::Error::new(
                 io::ErrorKind::AddrInUse,
@@ -518,6 +584,12 @@ pub fn bind(path: &Path) -> io::Result<UnixListener> {
         }
         fs::remove_file(path)?;
     }
+    // Narrowed to the owner straight after it is made. The file mode mask
+    // would close the moment in between, but it belongs to the whole
+    // process, and other threads make files. With the usual mask nobody
+    // else may write to the socket, and so connect, in that moment
+    // either; and the default place is in a directory others cannot
+    // enter.
     let listener = UnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     Ok(listener)

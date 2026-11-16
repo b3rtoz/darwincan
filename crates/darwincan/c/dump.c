@@ -55,21 +55,30 @@ int main(int argc, char **argv)
 		}
 	}
 	/* Bus state changes and adapter errors, too. */
-	dcan_raw_set_err_filter(sock, CAN_ERR_MASK);
+	if (dcan_raw_set_err_filter(sock, CAN_ERR_MASK) < 0) {
+		fprintf(stderr, "dump: %s\n", dcan_last_error());
+		return 1;
+	}
 	sigemptyset(&action.sa_mask);
 	sigaction(SIGINT, &action, NULL);
 	sigaction(SIGTERM, &action, NULL);
 	fprintf(stderr, "listening on %s\n", argv[1]);
 
 	while (!stop && (wanted == 0 || seen < wanted)) {
-		n = dcan_raw_recv(sock, &frame, &info, -1);
-		if (n == DCAN_ERROR_INTERRUPTED)
+		/* Not without limit: a signal that arrives between the test
+		 * of the flag above and the wait here would otherwise go
+		 * unnoticed until the next frame. */
+		n = dcan_raw_recv(sock, &frame, &info, 250);
+		if (n == 0 || n == DCAN_ERROR_INTERRUPTED)
 			continue;
 		if (n < 0) {
-			/* The failure of a frame someone sent on this socket,
-			 * the adapter unplugged, or the daemon gone. */
 			fprintf(stderr, "dump: %s\n", dcan_last_error());
-			if (n == DCAN_ERROR_IO || n == DCAN_ERROR_INTERFACE_REMOVED)
+			/* What the daemon refuses (-100 and below) is about
+			 * one frame, such as one sent on this socket that
+			 * could not go out, and the socket carries on; except
+			 * that the adapter was unplugged. Anything else is the
+			 * connection or the library, and will not get better. */
+			if (n > -100 || n == DCAN_ERROR_INTERFACE_REMOVED)
 				break;
 			continue;
 		}

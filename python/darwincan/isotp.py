@@ -74,6 +74,22 @@ class IsoTpSocket:
         max_rx_len: Optional[int] = None,
         socket_path=None,
     ):
+        # ctypes would cut a value that does not fit its field without a
+        # word, and the channel would open with other settings than asked.
+        for name, value, most in (
+            ("tx_id", tx_id, 0x1FFFFFFF if extended_id else 0x7FF),
+            ("rx_id", rx_id, 0x1FFFFFFF if extended_id else 0x7FF),
+            ("tx_dl", tx_dl, 64),
+            ("padding", padding, 0xFF),
+            ("block_size", block_size, 0xFF),
+            ("st_min", st_min, 0xFF),
+            ("max_rx_len", max_rx_len, 0xFFFFFFFF),
+        ):
+            if value is not None and not 0 <= value <= most:
+                raise ValueError(f"{name} must be 0 to {most:#x}, not {value!r}")
+        for name, seconds in (("n_bs", n_bs), ("n_cr", n_cr)):
+            if seconds is not None and not 0 <= seconds * 1000 <= 0xFFFFFFFF:
+                raise ValueError(f"{name} is out of range: {seconds!r}")
         self._lib = lib()
         self.channel = channel
         flag = CAN_EFF_FLAG if extended_id else 0
