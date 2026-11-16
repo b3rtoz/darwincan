@@ -15,7 +15,7 @@ darwinCAN is at version 0.1. It is usable and has been tested on real buses, but
 | ISO-TP (normal addressing, over classic CAN and CAN FD) | Working. The STmin gap has been verified on the wire. |
 | Broadcast manager (`CAN_BCM`) | Working, and tested on hardware. |
 | SAE J1939 (`CAN_J1939`), including BAM, RTS/CTS and the extended transport protocol | Working. Tested against itself and against Linux's J1939 stack on one bus, not yet against a J1939 device. |
-| Command-line tools (`candump`, `cansend`, `cangen`, `canplayer`, `isotpsend`, `isotprecv`, `canctl`) | Working. |
+| Command-line tools (`candump`, `cansend`, `cangen`, `canplayer`, `cansniffer`, `isotpsend`, `isotprecv`, `isotpdump`, `canctl`) | Working. |
 | J1939 tools (`j1939acd`, `j1939spy`, `j1939cat`, `j1939sr`, `testj1939`) | Working. Compared with can-utils 2023.03 on one bus, except `j1939sr`, which was compared for one case only. |
 | Rust library, C library and Python package | Working. There is no stability promise yet. |
 | Launch agent (`darwincand install`) | The mechanism is covered by tests, but it has seen little everyday use so far. |
@@ -36,7 +36,6 @@ The items below are listed roughly in the order they are likely to be done.
 | SLCAN backend | Support for adapters that present themselves as a serial port. |
 | Packaging | A Homebrew formula, and a Python wheel that includes the C library so that `pip install` is the only step. |
 | ISO-TP extended and mixed addressing | Only normal addressing is supported today. |
-| More tools | `cansniffer`, `isotpdump`, and the `-x` option of `candump`. |
 | A limit in bytes on what one client can queue | Today the limits count messages, so one program can make the daemon hold hundreds of megabytes. See "Robustness work still to do" below. |
 | Long soak tests | Runs lasting hours, at high bus load, with several nodes on the bus. |
 

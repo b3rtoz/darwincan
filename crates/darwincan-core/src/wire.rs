@@ -25,7 +25,7 @@ use crate::{
 /// The version of the protocol this build speaks, carried in every
 /// message header. Daemon and client must agree on it exactly; it goes
 /// up with every change to a message.
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 const HEADER_LEN: usize = 8;
 /// Upper bound on a payload, to keep a corrupt header from allocating wildly.
 /// The longest J1939 message (117 MB) fits.
@@ -266,6 +266,9 @@ pub enum Message {
         timestamp_ns: u64,
         /// True if this socket sent the frame itself.
         own: bool,
+        /// True if a program on this machine sent the frame, this socket
+        /// or another; false if it came from the bus.
+        local: bool,
         frame: Frame,
     },
     IsoTpData {
@@ -689,11 +692,12 @@ impl Message {
                 ifindex,
                 timestamp_ns,
                 own,
+                local,
                 frame,
             } => {
                 out.extend_from_slice(&ifindex.to_le_bytes());
                 out.extend_from_slice(&timestamp_ns.to_le_bytes());
-                out.push(u8::from(*own));
+                out.push(u8::from(*own) | u8::from(*local) << 1);
                 put_frame(out, frame);
                 T_FRAME
             }
@@ -889,12 +893,16 @@ impl Message {
                 code: ErrorCode::from_u16(r.u16()?),
                 message: r.string()?,
             },
-            T_FRAME => Message::Frame {
-                ifindex: r.u32()?,
-                timestamp_ns: r.u64()?,
-                own: r.u8()? != 0,
-                frame: r.frame()?,
-            },
+            T_FRAME => {
+                let (ifindex, timestamp_ns, origin) = (r.u32()?, r.u64()?, r.u8()?);
+                Message::Frame {
+                    ifindex,
+                    timestamp_ns,
+                    own: origin & 1 != 0,
+                    local: origin & 2 != 0,
+                    frame: r.frame()?,
+                }
+            }
             T_ISOTP_DATA => Message::IsoTpData {
                 timestamp_ns: r.u64()?,
                 data: r.rest().to_vec(),
@@ -1232,7 +1240,16 @@ mod tests {
                 ifindex: 2,
                 timestamp_ns: 1_700_000_000_123_456_789,
                 own: true,
+                local: true,
                 frame: Frame::new_fd(Id::Extended(0x18DAF110), &[7; 48], true).unwrap(),
+            },
+            // Another program's frame: not this socket's, but local.
+            Message::Frame {
+                ifindex: 2,
+                timestamp_ns: 8,
+                own: false,
+                local: true,
+                frame: Frame::new(Id::Standard(0x123), &[1]).unwrap(),
             },
             Message::IsoTpData {
                 timestamp_ns: 42,
@@ -1284,6 +1301,7 @@ mod tests {
                 ifindex: 1,
                 timestamp_ns: 7,
                 own: false,
+                local: false,
                 frame: Frame::new_error(crate::err::BUSOFF, [0; 8]),
             },
         ];

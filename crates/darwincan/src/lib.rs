@@ -748,6 +748,10 @@ pub struct RxFrame {
     /// True if this socket sent the frame (see
     /// [`RawSocket::set_recv_own_msgs`]).
     pub own: bool,
+    /// True if a program on this machine sent the frame, this socket or
+    /// another; false if it came from the bus. What `MSG_DONTROUTE` says
+    /// of a received frame on Linux.
+    pub local: bool,
     /// The index of the interface the frame was on (see
     /// [`IfaceInfo::index`]): of use on a socket open on every interface.
     pub ifindex: u32,
@@ -865,11 +869,13 @@ impl RawSocket {
                 ifindex,
                 timestamp_ns,
                 own,
+                local,
                 frame,
             } => Ok(Some(RxFrame {
                 frame,
                 timestamp_ns,
                 own,
+                local,
                 ifindex,
                 dropped: self.dropped(),
             })),

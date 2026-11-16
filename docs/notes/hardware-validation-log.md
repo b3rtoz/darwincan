@@ -552,6 +552,17 @@ The same bench and settings as the two runs before. A Python program with a `J19
 
 Not done: 2000 bytes from Linux, because can-utils' `testj1939` sends at most 128; that length crossed in both directions with `j1939cat` in the run before.
 
+### `candump -x` and `isotpdump` against can-utils (2026-11-16)
+
+The same bench and settings as the runs before, with `candump -x can0` and `isotpdump -s 7E0 -d 7E8 -a can0` running on both machines at once.
+
+| Check | Result |
+|---|---|
+| Two frames sent from the Mac and two from Linux (one of them a remote frame with a 29-bit identifier) | Each `candump -x` showed its own machine's frames as `TX` and the other's as `RX`; apart from that the lines were the same |
+| A 20-byte ISO-TP message from Linux's `isotpsend` to darwinCAN's `isotprecv` | Received. Both `isotpdump` printed the same four lines: the first frame, darwinCAN's flow control and two consecutive frames |
+
+That ISO-TP message is the first to cross between Linux's ISO-TP and darwinCAN's; nothing else of ISO-TP has been run against Linux.
+
 ## Bugs found on hardware and fixed
 
 | Symptom | Cause | Fixed |

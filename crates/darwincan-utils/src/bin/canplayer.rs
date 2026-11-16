@@ -22,6 +22,8 @@ Options:
   -l <num>      Replay the log this many times; 'i' repeats forever
                 (needs -I; default: 1)
   -t            Ignore the timestamps and send the frames back to back
+  -i            Interactive: wait for the ENTER key before each frame
+                (needs -I, and ignores the timestamps)
   -n <count>    Stop after this many frames
   -s <secs>     Do not wait out gaps in the log longer than this
   -x            Do not deliver the frames to other local programs
@@ -161,8 +163,12 @@ fn main() -> ExitCode {
         Ok(o) => o,
         Err(e) => return usage(TOOL, e, USAGE),
     };
-    if opts.has('i') {
-        return fail(TOOL, "option -i is not supported on macOS");
+    let interactive = opts.has('i');
+    if interactive && opts.value('I').is_none() {
+        return fail(
+            TOOL,
+            "-i needs a log file (-I): the keyboard is read for ENTER",
+        );
     }
 
     let parsed = (|| -> Result<_, String> {
@@ -200,7 +206,7 @@ fn main() -> ExitCode {
         Ok(p) => p,
         Err(e) => return usage(TOOL, e, USAGE),
     };
-    let use_timestamps = !opts.has('t');
+    let use_timestamps = !opts.has('t') && !interactive;
     let verbose = opts.has('v');
     let assigned = !routes.is_empty();
 
@@ -228,6 +234,9 @@ fn main() -> ExitCode {
         Ok(())
     };
     let stdout = io::stdout();
+    if interactive {
+        println!("interactive mode: press ENTER to process next CAN frame ...");
+    }
     let mut unchecked = 0u32;
     let mut pass = 0;
     while loops.map_or(true, |n| pass < n) {
@@ -244,6 +253,12 @@ fn main() -> ExitCode {
                 None if assigned => continue,
                 None => Route::Send(entry.ifname.to_string()),
             };
+            if interactive {
+                // The end of the input counts as a key, as it does in
+                // the original.
+                let mut key = String::new();
+                let _ = io::stdin().read_line(&mut key);
+            }
             if use_timestamps {
                 let now = Instant::now();
                 let due = schedule.due(entry.timestamp_ns, now);

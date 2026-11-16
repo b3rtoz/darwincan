@@ -19,6 +19,12 @@ pub(crate) trait Sink: Send + Sync {
     /// `own` is true when this sink transmitted the frame itself. Must not
     /// block: it runs on the sender's (or the hardware receive) thread.
     fn deliver(&self, frame: &Frame, timestamp_ns: u64, own: bool);
+    /// As [`deliver`](Self::deliver), for a sink that also wants to know
+    /// whether the frame was sent from this machine (`local`) or came
+    /// from the bus. `own` implies `local`.
+    fn deliver_from_origin(&self, frame: &Frame, timestamp_ns: u64, own: bool, _local: bool) {
+        self.deliver(frame, timestamp_ns, own);
+    }
     /// The interface went away (adapter unplugged).
     fn bus_removed(&self) {}
     /// A frame this sink transmitted was handed to the adapter but will
@@ -169,12 +175,12 @@ impl Bus {
                 Some(p) => {
                     let own = sink.id() == p.origin;
                     if own || p.loopback {
-                        sink.deliver(frame, timestamp_ns, own);
+                        sink.deliver_from_origin(frame, timestamp_ns, own, true);
                     }
                 }
                 // Sent before the interface was last restarted: nobody's
                 // own any more, but it was on the bus.
-                None => sink.deliver(frame, timestamp_ns, false),
+                None => sink.deliver_from_origin(frame, timestamp_ns, false, true),
             }
         }
     }
@@ -367,7 +373,7 @@ impl Bus {
         for sink in self.sinks.read().unwrap().iter() {
             let own = sink.id() == origin;
             if own || loopback {
-                sink.deliver(frame, ts, own);
+                sink.deliver_from_origin(frame, ts, own, true);
             }
         }
         Ok(())

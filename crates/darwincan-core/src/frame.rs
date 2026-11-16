@@ -276,7 +276,7 @@ impl fmt::Debug for Frame {
     }
 }
 
-/// Formats in can-utils log notation: `123#DEADBEEF`, `123#R2`, `123##1AABB`.
+/// Formats in can-utils log notation: `123#DEADBEEF`, `123#R2`, `123##5AABB`.
 impl fmt::Display for Frame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_error() {
@@ -288,7 +288,13 @@ impl fmt::Display for Frame {
             write!(f, "{:03X}", self.can_id & CAN_SFF_MASK)?;
         }
         if self.is_fd() {
-            write!(f, "##{:X}", self.flags & (CANFD_BRS | CANFD_ESI))?;
+            // With the bit that says "CAN FD", as can-utils writes it
+            // since 2023: ##4, ##5 (BRS), ##6 (ESI), ##7.
+            write!(
+                f,
+                "##{:X}",
+                (self.flags & (CANFD_BRS | CANFD_ESI)) | CANFD_FDF
+            )?;
         } else if self.is_remote() {
             f.write_str("#R")?;
             if self.len > 0 {
@@ -425,11 +431,22 @@ mod tests {
             "12345678#0011223344556677",
             "123#R",
             "123#R4",
-            "123##1AABBCCDD",
-            "1FFFFFFF##0",
+            "123##5AABBCCDD",
+            "1FFFFFFF##4",
+            "123##7AA",
         ] {
             let f: Frame = s.parse().unwrap();
             assert_eq!(f.to_string(), s);
+        }
+        // The flags digit is read with or without the CAN FD bit, which
+        // older logs do not have, and written with it.
+        for (old, new) in [
+            ("123##1AABBCCDD", "123##5AABBCCDD"),
+            ("1FFFFFFF##0", "1FFFFFFF##4"),
+        ] {
+            let f: Frame = old.parse().unwrap();
+            assert_eq!(f.to_string(), new);
+            assert_eq!(f, new.parse().unwrap());
         }
     }
 

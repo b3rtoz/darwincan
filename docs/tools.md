@@ -72,6 +72,8 @@ Settings are remembered while an interface is down, so the two-step form (`link 
 | `cansend` | Sends one frame: `123#DEADBEEF`, `123#R` (remote), `123##1...` (CAN FD) |
 | `cangen` | Generates random or counting test traffic at a set interval |
 | `canplayer` | Replays a `candump -l` log with its original timing |
+| `cansniffer` | Shows the latest data of each identifier on one screen and marks what changes |
+| `isotpdump` | Shows the frames of an ISO-TP exchange taken apart, with UDS service names if asked |
 | `isotpsend` | Sends one ISO-TP message, read as hex bytes from standard input |
 | `isotprecv` | Receives ISO-TP messages and prints them as hex bytes |
 | `j1939acd` | Claims a J1939 address for a NAME and defends it, so that programs can use the NAME |
@@ -87,6 +89,10 @@ Every tool prints its options with `-h`.
 candump vcan0                                   # everything on vcan0
 candump -ta can0,123:7FF vcan0                  # absolute timestamps, a filter, two interfaces
 candump -e can0                                 # with error frames
+candump -x -c can0 can1                         # sent or received, and a colour for each interface
+candump -d can0                                 # say when this program lost frames
+cansniffer -c can0                              # one row for each identifier; changes in red
+isotpdump -s 7E0 -d 7E8 -u -ta can0             # an ISO-TP exchange, with UDS names
 candump -l any                                  # log every interface to candump-<date>.log
 
 cansend vcan0 123#DEADBEEF
@@ -146,6 +152,11 @@ The following differences are worth knowing:
 - **`link set can0 up type can bitrate ...` on an interface that is already up reconfigures it.** Changing settings without `up` requires the interface to be down first, as on Linux.
 - **`candump -e` receives all error frames by itself.** On Linux it also needs a `#<mask>` filter.
 - **`canplayer` sends each frame at its logged time** instead of polling every `-g` milliseconds, so `-g` has no effect.
+- **`candump -x` shows `TX` for a frame that any program on this Mac sent** and `RX` for one that came from the bus, as on Linux. `candump -d` reports frames that `candump` itself lost by reading too slowly, which is the only place a frame can be lost here. `candump -D` waits for an interface that goes away and picks it up again when it is back under its name.
+- **CAN FD frames are logged as current can-utils logs them,** with the CAN FD bit in the flags digit (`123##5...` for a frame with bit rate switching, where older versions wrote `123##1...`). Both forms are read.
+- **`cangen` always keeps its gaps from a running clock.** With `-a` it also makes up the time when a frame went out late, so that the rate holds.
+- **`cansniffer` takes its commands as lines,** as on Linux: a letter and ENTER. It was compared with can-utils 2023.03 for its screen in each mode, its filters and its settings file. Colour in the binary modes marks whole bytes; how the original marks them there was not checked.
+- **`isotpdump` shows frames that carry an address byte** with `-x` and `-X`, although the ISO-TP sockets do not support extended addressing yet.
 - **A frame you send on a hardware interface is shown once it has been on the bus**, with the adapter's timestamp. A frame that nobody acknowledges is not shown.
 - **The J1939 tools need an interface to be named.** On Linux some of them fall back to `can0` or to every interface; here only `j1939acd` falls back to `can0`.
 - **`j1939spy` without `-P` shows nothing,** as on Linux: its socket has no address of its own. A parameter group given without a sender (`can0:,FEF1`) filters here; on Linux it was seen not to.
@@ -154,7 +165,7 @@ The following differences are worth knowing:
 - **`j1939cat` reports less of a message's progress.** It prints `TX ACK` when a message is out and `TX ABT` when it was given up, with Linux's error number and text, and exits with that number. The `TX ENQ` lines Linux prints while a long message is under way are not printed. With `-s`, the input is sent in pieces of that size, each as one message.
 - **`j1939sr` sends with a parameter group.** It takes the one in DEST or, failing that, the one in SOURCE, and refuses to send without one. In can-utils 2023.03 it sends with no valid parameter group.
 - **Address claims that collide on the bus are not spaced out.** SAE J1939-81 asks for a random delay before a claim is sent again after a bus error. The adapters repeat a frame by themselves, so `j1939acd` cannot do that.
-- **The following are not available:** `candump -x`, `-c`, `-i`, `-S`, `-d`, `-D` and `-r`; `cangen -a`, `-t`, `-X` and `-8`; `canplayer -i`; bit timing by segments (`tq`, `prop-seg` and so on), `restart-ms`, `loopback on`, `one-shot on` and `triple-sampling on`. Each is refused with a message and is never silently ignored.
+- **The following are not available:** `candump -r` (there is no socket buffer to size) and `-8`; `cangen -t`, `-X` and `-8`, and its CAN XL options; bit timing by segments (`tq`, `prop-seg` and so on), `restart-ms`, `loopback on`, `one-shot on` and `triple-sampling on`. Each is refused with a message and is never silently ignored.
 
 ## Troubleshooting
 

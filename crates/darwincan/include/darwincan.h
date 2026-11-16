@@ -190,7 +190,9 @@ struct dcan_rx_info {
 	uint32_t reserved;
 };
 
-#define DCAN_RX_OWN 1U /* this socket sent the frame itself */
+#define DCAN_RX_OWN   1U /* this socket sent the frame itself */
+#define DCAN_RX_LOCAL 2U /* a program on this machine sent the frame, this socket
+                          * or another: what MSG_DONTROUTE says on Linux */
 
 /* The interface name that opens a socket on every interface, those that
  * appear later included: what binding to interface index 0 is on Linux.

@@ -11,7 +11,7 @@ macOS has no CAN stack, and it lets only one process claim a USB adapter, so on 
 
 ## What it gives you
 
-- **The tools you know from Linux**: `candump`, `cansend`, `cangen`, `canplayer`, `isotpsend`, `isotprecv` and the J1939 tools (`j1939acd`, `j1939spy`, `j1939cat`, `j1939sr`, `testj1939`), with the can-utils command lines and output, and `canctl link ...` in place of `ip link ...`.
+- **The tools you know from Linux**: `candump`, `cansend`, `cangen`, `canplayer`, `cansniffer`, `isotpsend`, `isotprecv`, `isotpdump` and the J1939 tools (`j1939acd`, `j1939spy`, `j1939cat`, `j1939sr`, `testj1939`), with the can-utils command lines and output, and `canctl link ...` in place of `ip link ...`.
 - **Several programs on one adapter at once**: a logger beside your application, `candump` beside your test.
 - **Libraries for Rust, C and Python.** The C library uses the structs and constants of `<linux/can.h>`; the Python package is a [python-can](https://python-can.readthedocs.io) interface.
 - **Protocols run by the daemon**: ISO-TP (ISO 15765-2) for UDS and OBD-II, cyclic messages and change detection (`CAN_BCM`), and SAE J1939 with its transport protocols (`CAN_J1939`).

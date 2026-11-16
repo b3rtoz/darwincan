@@ -172,7 +172,8 @@ class DarwincanBus(BusABC):
         As for every python-can bus. The daemon does the filtering.
     :param receive_own_messages:
         Also receive the frames this bus sent, once they are on the bus
-        and with the time they were; their ``is_rx`` is False.
+        and with the time they were. Their ``is_rx`` is False, as it is for
+        every frame that a program on this machine sent.
     :param local_loopback:
         Whether frames sent here reach the other programs on the interface.
     :param fd:
@@ -423,7 +424,7 @@ class DarwincanBus(BusABC):
             dlc=length,
             data=data,
             is_fd=is_fd,
-            is_rx=not info.flags & _lib.DCAN_RX_OWN,
+            is_rx=not info.flags & _lib.DCAN_RX_LOCAL,
             bitrate_switch=is_fd and bool(frame.flags & CANFD_BRS),
             error_state_indicator=is_fd and bool(frame.flags & CANFD_ESI),
             check=False,

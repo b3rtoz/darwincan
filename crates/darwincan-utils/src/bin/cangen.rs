@@ -22,6 +22,9 @@ Generate CAN frames for testing.
 Options:
   -g <ms>       Gap between frames in milliseconds, may be fractional
                 (default: 200)
+  -a            Keep the gaps from the time the first frame went out: a
+                frame that goes out late is followed sooner, so that the
+                rate holds over time
   -c <count>    Frames to send in a burst before each gap (default: 1)
   -n <count>    Stop after this many frames (default: run until interrupted)
   -e            Extended (29-bit) identifiers
@@ -51,7 +54,7 @@ Examples:
   cangen vcan0 -g 0 -x -n 100000";
 
 /// can-utils options that have no counterpart here.
-const UNSUPPORTED: &str = "atX8F:S:A:V:P:";
+const UNSUPPORTED: &str = "tX8F:S:A:V:P:";
 
 /// Payload lengths a CAN FD data length code can express.
 const FD_LENGTHS: [usize; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64];
@@ -265,7 +268,7 @@ fn main() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    let opts = match getopt(args, &format!("g:c:n:efbERmI:L:D:xvip:{UNSUPPORTED}")) {
+    let opts = match getopt(args, &format!("g:c:n:efbERmI:L:D:xvip:a{UNSUPPORTED}")) {
         Ok(o) => o,
         Err(e) => return usage(TOOL, e, USAGE),
     };
@@ -347,6 +350,7 @@ fn main() -> ExitCode {
     if !gap.is_zero() {
         prefer_precise_timing();
     }
+    let absolute = opts.has('a');
     let mut pacer = Pacer::calibrated();
     let mut generator = Generator::new(config, Rng::from_clock());
     let stdout = io::stdout();
@@ -390,8 +394,9 @@ fn main() -> ExitCode {
         if !gap.is_zero() {
             deadline += gap;
             let now = Instant::now();
-            if deadline < now {
+            if deadline < now && !absolute {
                 // Fell behind (suspended, or a gap shorter than a send).
+                // With -a the lost time is made up instead.
                 deadline = now;
             }
             pacer.sleep_until(deadline);

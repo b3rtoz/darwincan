@@ -6,12 +6,14 @@ use std::fmt::Display;
 use std::process::ExitCode;
 
 use darwincan::{
-    err, Filter, Frame, IsoTpParams, CAN_EFF_FLAG, CAN_EFF_MASK, CAN_ERR_FLAG, CAN_INV_FILTER,
-    CAN_SFF_MASK,
+    err, Filter, Frame, IsoTpParams, CANFD_BRS, CANFD_ESI, CAN_EFF_FLAG, CAN_EFF_MASK,
+    CAN_ERR_FLAG, CAN_INV_FILTER, CAN_SFF_MASK,
 };
 
 pub mod acd;
+pub mod isotpdump;
 pub mod j1939;
+pub mod sniffer;
 
 /// Print `tool: message` to stderr and return a failure exit code.
 pub fn fail(tool: &str, message: impl Display) -> ExitCode {
@@ -216,10 +218,30 @@ pub fn parse_filter(s: &str) -> Result<Filter, String> {
     Ok(Filter::new(can_id, parse(mask)?))
 }
 
+/// How `candump` is asked to show a frame's data.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DataView {
+    /// Append the payload as text (payloads of up to 8 bytes): `-a`.
+    pub ascii: bool,
+    /// Each byte as eight binary digits: `-i`.
+    pub binary: bool,
+    /// The bytes in reverse order, with a backtick between them: `-S`.
+    pub swap: bool,
+}
+
 /// A frame in the column layout `candump` prints: identifier, `[length]`,
 /// data bytes. `indent_sff` right-aligns 11-bit identifiers with 29-bit
 /// ones; `ascii` appends the payload as text (payloads up to 8 bytes).
 pub fn long_frame(f: &Frame, indent_sff: bool, ascii: bool) -> String {
+    let view = DataView {
+        ascii,
+        ..DataView::default()
+    };
+    long_frame_view(f, indent_sff, view)
+}
+
+/// As [`long_frame`], with the data shown as `view` says.
+pub fn long_frame_view(f: &Frame, indent_sff: bool, view: DataView) -> String {
     let mut s = if f.is_error() {
         format!("{:08X}", f.can_id() & (CAN_ERR_FLAG | err::MASK))
     } else if f.is_extended() {
@@ -238,27 +260,39 @@ pub fn long_frame(f: &Frame, indent_sff: bool, ascii: bool) -> String {
         s.push_str("  remote request");
         return s;
     }
+    let mut data = f.data().to_vec();
+    if view.swap {
+        data.reverse();
+    }
+    let between = if view.swap { '`' } else { ' ' };
     s.push(' ');
-    for b in f.data() {
-        s.push_str(&format!(" {b:02X}"));
+    for (i, b) in data.iter().enumerate() {
+        s.push(if i == 0 { ' ' } else { between });
+        if view.binary {
+            s.push_str(&format!("{b:08b}"));
+        } else {
+            s.push_str(&format!("{b:02X}"));
+        }
     }
     if f.len() > 8 {
         return s;
     }
     // Text after the data starts in the same column whatever the length.
-    let pad = 3 * (8 - f.len());
+    let width = if view.binary { 9 } else { 3 };
+    let pad = width * (8 - f.len());
     if f.is_error() {
         s.push_str(&format!("{:>1$}", "ERRORFRAME", pad + 13));
-    } else if ascii {
-        s.push_str(&format!("{:>1$}", "'", pad + 4));
-        s.extend(f.data().iter().map(|&b| {
+    } else if view.ascii {
+        let quote = if view.swap { "`" } else { "'" };
+        s.push_str(&format!("{:>1$}", quote, pad + 4));
+        s.extend(data.iter().map(|&b| {
             if (0x20..0x7F).contains(&b) {
                 b as char
             } else {
                 '.'
             }
         }));
-        s.push('\'');
+        s.push_str(quote);
     }
     s
 }
@@ -266,7 +300,15 @@ pub fn long_frame(f: &Frame, indent_sff: bool, ascii: bool) -> String {
 /// A frame in log notation with `.` between the data bytes
 /// (`123#DE.AD`, `123##1.DE.AD`), as `cangen -v` prints it.
 pub fn dotted_frame(f: &Frame) -> String {
-    let compact = f.to_string();
+    let mut compact = f.to_string();
+    if f.is_fd() {
+        // The flags digit as `cangen` has it: the bits it set itself,
+        // without the one that says "CAN FD", which a received frame has.
+        if let Some(at) = compact.find("##") {
+            let flags = f.flags() & (CANFD_BRS | CANFD_ESI);
+            compact.replace_range(at + 2..at + 3, &format!("{flags:X}"));
+        }
+    }
     if f.is_remote() || f.data().is_empty() {
         return compact;
     }
@@ -787,6 +829,39 @@ mod tests {
         assert_eq!(
             long_frame(&f("123#4142434445464748"), false, true),
             "123   [8]  41 42 43 44 45 46 47 48   'ABCDEFGH'"
+        );
+        // Binary, byte-swapped and both, as can-utils prints them.
+        let view = |ascii, binary, swap| DataView {
+            ascii,
+            binary,
+            swap,
+        };
+        assert_eq!(
+            long_frame_view(&f("123#DEADBEEF"), false, view(false, true, false)),
+            "123   [4]  11011110 10101101 10111110 11101111"
+        );
+        assert_eq!(
+            long_frame_view(&f("123#DEADBEEF"), false, view(false, false, true)),
+            "123   [4]  EF`BE`AD`DE"
+        );
+        assert_eq!(
+            long_frame_view(&f("123#41424344"), false, view(true, false, true)),
+            "123   [4]  44`43`42`41               `DCBA`"
+        );
+        assert_eq!(
+            long_frame_view(&f("123#41424344"), false, view(false, true, true)),
+            "123   [4]  01000100`01000011`01000010`01000001"
+        );
+        assert_eq!(
+            long_frame_view(&f("123#41424344"), false, view(true, true, false)),
+            format!(
+                "123   [4]  01000001 01000010 01000011 01000100{}'ABCD'",
+                " ".repeat(39)
+            )
+        );
+        assert_eq!(
+            long_frame_view(&f("123#"), false, view(false, false, true)),
+            "123   [0] "
         );
         assert_eq!(
             long_frame(&Frame::new_error(err::BUSOFF, [0; 8]), false, false),

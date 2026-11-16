@@ -111,7 +111,7 @@ impl RawSink {
     }
 
     /// A frame from the interface with index `ifindex`.
-    fn deliver_from(&self, ifindex: u32, frame: &Frame, timestamp_ns: u64, own: bool) {
+    fn deliver_from(&self, ifindex: u32, frame: &Frame, timestamp_ns: u64, own: bool, local: bool) {
         if own && !self.recv_own.load(Ordering::Relaxed) {
             return;
         }
@@ -146,6 +146,7 @@ impl RawSink {
             ifindex,
             timestamp_ns,
             own,
+            local,
             frame: *frame,
         };
         if self.out.try_send(msg).is_err() {
@@ -160,7 +161,11 @@ impl Sink for RawSink {
     }
 
     fn deliver(&self, frame: &Frame, timestamp_ns: u64, own: bool) {
-        self.deliver_from(self.ifindex, frame, timestamp_ns, own);
+        self.deliver_from(self.ifindex, frame, timestamp_ns, own, own);
+    }
+
+    fn deliver_from_origin(&self, frame: &Frame, timestamp_ns: u64, own: bool, local: bool) {
+        self.deliver_from(self.ifindex, frame, timestamp_ns, own, local);
     }
 
     fn link_state(&self, state: LinkState) {
@@ -190,7 +195,12 @@ impl Sink for Tap {
 
     fn deliver(&self, frame: &Frame, timestamp_ns: u64, own: bool) {
         self.socket
-            .deliver_from(self.ifindex, frame, timestamp_ns, own);
+            .deliver_from(self.ifindex, frame, timestamp_ns, own, own);
+    }
+
+    fn deliver_from_origin(&self, frame: &Frame, timestamp_ns: u64, own: bool, local: bool) {
+        self.socket
+            .deliver_from(self.ifindex, frame, timestamp_ns, own, local);
     }
 }
 

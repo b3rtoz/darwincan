@@ -69,7 +69,9 @@ class BusTest(unittest.TestCase):
         self.assertEqual(got[0].dlc, 3)
         self.assertFalse(got[0].is_extended_id)
         self.assertEqual(got[0].channel, CHANNEL)
-        self.assertTrue(got[0].is_rx)
+        # Sent from this machine, by another bus: not received from the
+        # wire, as python-can's socketcan interface has it.
+        self.assertFalse(got[0].is_rx)
         self.assertFalse(got[0].is_fd)
         self.assertEqual(got[1].arbitration_id, 0x18DAF110)
         self.assertTrue(got[1].is_extended_id)

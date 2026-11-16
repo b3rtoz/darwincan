@@ -86,7 +86,9 @@ fn frames_reach_other_clients_but_not_the_sender() {
     let rc = c.recv().unwrap();
     assert_eq!(rb.frame, f);
     assert_eq!(rc.frame, f);
-    assert!(!rb.own);
+    // Another program's frame: not the receiver's own, but sent from this
+    // machine.
+    assert!(!rb.own && rb.local);
     // Every receiver sees the same timestamp for the same frame.
     assert_eq!(rb.timestamp_ns, rc.timestamp_ns);
     assert!(rb.timestamp_ns >= before && rb.timestamp_ns <= darwincand::now_ns());
@@ -549,7 +551,8 @@ fn hardware_backend_lifecycle() {
         let rx = s.recv().unwrap();
         assert_eq!(rx.frame, from_wire);
         assert_eq!(rx.timestamp_ns, 1234);
-        assert!(!rx.own);
+        // From the bus.
+        assert!(!rx.own && !rx.local);
     }
 
     // A transmit failure is reported to the sender and not echoed.
@@ -818,10 +821,10 @@ fn a_sent_frame_is_seen_when_the_adapter_reports_it() {
     // The adapter reports it sent: both see it, with the adapter's time.
     handle.transmitted(token, &f, Some(5555));
     let own = a.recv().unwrap();
-    assert!(own.own);
+    assert!(own.own && own.local);
     assert_eq!((own.frame, own.timestamp_ns), (f, 5555));
     let other = b.recv().unwrap();
-    assert!(!other.own);
+    assert!(!other.own && other.local);
     assert_eq!((other.frame, other.timestamp_ns), (f, 5555));
 
     // With loopback off only the sender sees its frame.
@@ -844,7 +847,7 @@ fn a_sent_frame_is_seen_when_the_adapter_reports_it() {
     handle.transmitted(token, &f, Some(7777));
     for s in [&a, &b] {
         let late = s.recv().unwrap();
-        assert!(!late.own);
+        assert!(!late.own && late.local);
         assert_eq!(late.timestamp_ns, 7777);
     }
 }

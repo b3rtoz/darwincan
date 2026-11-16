@@ -42,7 +42,7 @@ cargo test -p darwincand --test python_api
 | `crates/darwincan-isotp` | The ISO 15765-2 state machine, with no I/O and no clock |
 | `crates/darwincan-j1939` | The SAE J1939 stack for one interface, with no I/O and no clock |
 | `crates/darwincan` | The client library: `RawSocket`, `IsoTpSocket`, `BcmSocket`, `J1939Socket`, `Control`. `ffi.rs` is the C API, which is declared in `include/*.h`. `c/` holds the C examples and the self-test, and `examples/` holds the Rust examples |
-| `crates/darwincan-utils` | `candump`, `cansend`, `cangen`, `canplayer`, `isotpsend`, `isotprecv`, `canctl`, and the J1939 tools `j1939acd`, `j1939spy`, `j1939cat`, `j1939sr`, `testj1939`. The address claiming of `j1939acd` (`acd.rs`) does no I/O and reads no clock |
+| `crates/darwincan-utils` | `candump`, `cansend`, `cangen`, `canplayer`, `cansniffer`, `isotpsend`, `isotprecv`, `isotpdump`, `canctl`, and the J1939 tools `j1939acd`, `j1939spy`, `j1939cat`, `j1939sr`, `testj1939`. The address claiming of `j1939acd` (`acd.rs`) does no I/O and reads no clock |
 | `crates/darwincand` | The daemon: `bus.rs` (an interface and its fan-out), `session.rs` (one client connection), `bcm.rs` (broadcast manager jobs), `j1939.rs` (one J1939 stack per interface), `backends/` (hardware drivers, `timesync.rs`), `bittiming.rs`, `names.rs`, `launchd.rs`, `priority.rs` |
 | `python/` | The Python package: `_lib.py` (the C declarations, written with ctypes), `bus.py` (the python-can interface and cyclic tasks), `isotp.py`, `j1939.py`, `tests/` |
 | `docs/` | The guides. `docs/notes/` holds the dated hardware log and the decision log |

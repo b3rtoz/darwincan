@@ -8,9 +8,10 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
-use darwincan::{err, Control, Filter, RawSocket, RxFrame, ANY_INTERFACE};
+use darwincan::{err, Control, Filter, RawSocket, RxFrame, ANY_INTERFACE, CANFD_ESI};
 use darwincan_utils::{
-    describe_error, fail, getopt, local_time, long_frame, parse_filter, usage, wants_help,
+    describe_error, fail, getopt, local_time, long_frame_view, parse_filter, usage, wants_help,
+    DataView,
 };
 
 const TOOL: &str = "candump";
@@ -25,6 +26,15 @@ Options:
   -t <type>     Timestamp: a (absolute), d (delta to the previous frame),
                 z (from the first frame), A (absolute with date)
   -a            Also show the data as ASCII
+  -c            Colour: once for the interface name, twice for the line,
+                three times for the timestamp as well
+  -i            Show the data in binary (lines may exceed 80 characters)
+  -S            Show the data bytes in reverse order, marked with '`'
+  -x            Show whether a frame was sent from this machine (TX) or
+                came from the bus (RX), and the BRS and ESI bits of a
+                CAN FD frame
+  -d            Report frames this program lost by reading too slowly
+  -D            Do not exit when an interface goes away; wait for it
   -e            Describe error frames (bus state changes, overruns); also
                 receives all of them unless a #<mask> filter is given
   -L            Log format on standard output: (timestamp) interface frame
@@ -49,8 +59,17 @@ Examples:
   candump -l any
   candump -e can0,0~0,#FFFFFFFF      (error frames only)";
 
-/// can-utils options that have no counterpart here.
-const UNSUPPORTED: &str = "NciSr:Dd8x";
+/// can-utils options that have no counterpart here: -r sets the size of
+/// a socket buffer that does not exist, and -8 shows a raw DLC, which the
+/// daemon does not carry.
+const UNSUPPORTED: &str = "Nr:8";
+
+const BOLD: &str = "\x1b[1m";
+const RESET: &str = "\x1b[0m";
+/// The colours interfaces get, in the order they are named.
+const COLOURS: [&str; 6] = [
+    "\x1b[34m", "\x1b[31m", "\x1b[32m", "", "\x1b[35m", "\x1b[36m",
+];
 
 /// One `<interface>[,<filter>...]` argument.
 #[derive(Debug, PartialEq, Eq)]
@@ -149,14 +168,74 @@ impl Stamper {
     }
 }
 
-/// The line for one frame in the normal view.
-fn console_line(stamp: &str, name: &str, width: usize, body: &str) -> String {
-    format!(" {stamp} {name:>width$}  {body}")
+/// The line for one frame in the normal view, coloured to `level` (0 to
+/// 3) for the interface that is number `nth` of those shown.
+fn coloured_line(
+    stamp: &str,
+    name: &str,
+    width: usize,
+    body: &str,
+    level: usize,
+    nth: usize,
+) -> String {
+    let colour = format!("{BOLD}{}", COLOURS[nth % COLOURS.len()]);
+    match level {
+        0 => format!(" {stamp} {name:>width$}  {body}"),
+        1 => format!(" {stamp} {colour}{name:>width$}{RESET}  {body}"),
+        2 => format!(" {stamp} {colour}{name:>width$}  {body}{RESET}"),
+        _ => format!(" {colour}{stamp} {name:>width$}  {body}{RESET}"),
+    }
 }
 
-/// The line for one frame in log format.
-fn log_line(stamp: &str, name: &str, width: usize, rx: &RxFrame) -> String {
-    format!("{stamp}{name:>width$} {}", rx.frame)
+/// What `-x` puts in front of a frame: where it came from, and the bit
+/// rate switch and error state bits of a CAN FD frame.
+fn extra_info(rx: &RxFrame) -> String {
+    format!(
+        "{} {} {}  ",
+        if rx.local { "TX" } else { "RX" },
+        if rx.frame.is_brs() { "B" } else { "-" },
+        if rx.frame.is_fd() && rx.frame.flags() & CANFD_ESI != 0 {
+            "E"
+        } else {
+            "-"
+        },
+    )
+}
+
+/// The line for one frame in log format; with `extra`, followed by where
+/// the frame came from.
+fn log_line(stamp: &str, name: &str, width: usize, rx: &RxFrame, extra: bool) -> String {
+    let origin = match (extra, rx.local) {
+        (false, _) => "",
+        (true, true) => " T",
+        (true, false) => " R",
+    };
+    format!("{stamp}{name:>width$} {}{origin}", rx.frame)
+}
+
+/// What `-d` prints when frames were lost since the last one shown.
+fn drop_line(lost: u64, name: &str, total: u64) -> String {
+    format!(
+        "DROPCOUNT: dropped {lost} CAN frame{} on '{name}' socket (total drops {total})",
+        if lost == 1 { "" } else { "s" }
+    )
+}
+
+/// Open the socket for one interface argument.
+fn open_target(target: &Target, describe: bool) -> darwincan::Result<RawSocket> {
+    let sock = RawSocket::open(&target.ifname)?;
+    if let Some(filters) = &target.filters {
+        sock.set_filters(filters)?;
+    }
+    if target.join {
+        sock.set_join_filters(true)?;
+    }
+    match (target.err_mask, describe) {
+        (Some(mask), _) => sock.set_error_filter(mask)?,
+        (None, true) => sock.set_error_filter(err::MASK)?,
+        (None, false) => {}
+    }
+    Ok(sock)
 }
 
 fn main() -> ExitCode {
@@ -165,7 +244,7 @@ fn main() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    let opts = match getopt(args, &format!("t:aeLlf:s:n:T:H{UNSUPPORTED}")) {
+    let opts = match getopt(args, &format!("t:aeLlf:s:n:T:HciSxdD{UNSUPPORTED}")) {
         Ok(o) => o,
         Err(e) => return usage(TOOL, e, USAGE),
     };
@@ -200,8 +279,16 @@ fn main() -> ExitCode {
         (Ok(n), Ok(t)) => (n, t.map(Duration::from_millis)),
         (Err(e), _) | (_, Err(e)) => return usage(TOOL, e, USAGE),
     };
-    let ascii = opts.has('a');
+    let view = DataView {
+        ascii: opts.has('a'),
+        binary: opts.has('i'),
+        swap: opts.has('S'),
+    };
     let describe = opts.has('e');
+    let colour = opts.count('c');
+    let extra = opts.has('x');
+    let monitor_drops = opts.has('d');
+    let stay = opts.has('D');
 
     // Where the log goes: a file (-l, -f) and/or standard output (-L).
     let mut log_stdout = opts.has('L');
@@ -258,25 +345,18 @@ fn main() -> ExitCode {
 
     // One thread per socket feeds a single queue, so frames print in the
     // order they arrive here; their timestamps were taken in the daemon.
+    let everywhere_any = targets.iter().any(|t| t.ifname == ANY_INTERFACE);
     let (tx, rx) = mpsc::channel();
     let mut width = targets.iter().map(|t| t.ifname.len()).max().unwrap_or(0);
+    // The interfaces in the order they are first named or seen: each has
+    // its colour, and its count of lost frames.
+    let mut shown: Vec<(String, u64)> = targets
+        .iter()
+        .filter(|t| t.ifname != ANY_INTERFACE)
+        .map(|t| (t.ifname.clone(), 0))
+        .collect();
     for target in targets {
-        let open = || -> darwincan::Result<RawSocket> {
-            let sock = RawSocket::open(&target.ifname)?;
-            if let Some(filters) = &target.filters {
-                sock.set_filters(filters)?;
-            }
-            if target.join {
-                sock.set_join_filters(true)?;
-            }
-            match (target.err_mask, describe) {
-                (Some(mask), _) => sock.set_error_filter(mask)?,
-                (None, true) => sock.set_error_filter(err::MASK)?,
-                (None, false) => {}
-            }
-            Ok(sock)
-        };
-        let sock = match open() {
+        let mut sock = match open_target(&target, describe) {
             Ok(s) => s,
             Err(e) => return fail(TOOL, format!("{}: {e}", target.ifname)),
         };
@@ -293,6 +373,18 @@ fn main() -> ExitCode {
             let mut known = HashMap::new();
             loop {
                 let result = sock.recv();
+                if result.is_err() && stay {
+                    // The interface went away: wait for it to come back
+                    // (an adapter plugged in again gets its name back).
+                    loop {
+                        thread::sleep(Duration::from_millis(500));
+                        if let Ok(again) = open_target(&target, describe) {
+                            sock = again;
+                            break;
+                        }
+                    }
+                    continue;
+                }
                 let failed = result.is_err();
                 let name = match &result {
                     Ok(rx) if everywhere => {
@@ -344,14 +436,37 @@ fn main() -> ExitCode {
         let frame = &rx_frame.frame;
         // Once a 29-bit identifier has been seen, 11-bit ones line up with it.
         indent_sff |= frame.is_extended();
+        let nth = match shown.iter().position(|(n, _)| n == name) {
+            Some(nth) => nth,
+            None => {
+                shown.push((name.clone(), 0));
+                shown.len() - 1
+            }
+        };
 
         let mut lines = Vec::new();
+        if monitor_drops {
+            // The count is the socket's: on every interface at once it
+            // is one count, told with whichever frame comes next.
+            let total = rx_frame.dropped;
+            let before = shown.iter().map(|(_, lost)| *lost).max().unwrap_or(0);
+            let told = if everywhere_any { before } else { shown[nth].1 };
+            if total > told {
+                lines.push(drop_line(total - told, name, total));
+                if everywhere_any {
+                    shown.iter_mut().for_each(|(_, lost)| *lost = total);
+                } else {
+                    shown[nth].1 = total;
+                }
+            }
+        }
         if log_file.is_some() || log_stdout {
             let line = log_line(
                 &logged.format(rx_frame.timestamp_ns),
                 name,
                 width,
                 &rx_frame,
+                extra,
             );
             if let Some(file) = &mut log_file {
                 if let Err(e) = writeln!(file, "{line}") {
@@ -363,11 +478,19 @@ fn main() -> ExitCode {
             }
         }
         if !log_stdout && !silent {
-            let mut line = console_line(
+            let mut body = if extra {
+                extra_info(&rx_frame)
+            } else {
+                String::new()
+            };
+            body.push_str(&long_frame_view(frame, indent_sff, view));
+            let mut line = coloured_line(
                 &console.format(rx_frame.timestamp_ns),
                 name,
                 width,
-                &long_frame(frame, indent_sff, ascii),
+                &body,
+                colour,
+                nth,
             );
             if describe && frame.is_error() {
                 line.push_str(&format!("\n\t{}", describe_error(frame)));
@@ -459,6 +582,11 @@ mod tests {
         assert!(dated.ends_with(".123456) "), "{dated}");
     }
 
+    /// The line for one frame without colour.
+    fn plain_line(stamp: &str, name: &str, width: usize, body: &str) -> String {
+        coloured_line(stamp, name, width, body, 0, 0)
+    }
+
     #[test]
     fn lines_match_can_utils() {
         let frame: Frame = "123#DEADBEEF".parse().unwrap();
@@ -466,21 +594,88 @@ mod tests {
             frame,
             timestamp_ns: 1_700_000_000_123_456_000,
             own: false,
+            local: true,
             ifindex: 1,
             dropped: 0,
         };
-        let body = long_frame(&frame, false, false);
+        let body = long_frame_view(&frame, false, DataView::default());
         assert_eq!(
-            console_line("", "vcan0", 5, &body),
+            plain_line("", "vcan0", 5, &body),
             "  vcan0  123   [4]  DE AD BE EF"
         );
         assert_eq!(
-            console_line("(1700000000.123456) ", "can0", 5, &body),
+            plain_line("(1700000000.123456) ", "can0", 5, &body),
             " (1700000000.123456)   can0  123   [4]  DE AD BE EF"
         );
         assert_eq!(
-            log_line("(1700000000.123456) ", "vcan0", 5, &rx),
+            log_line("(1700000000.123456) ", "vcan0", 5, &rx, false),
             "(1700000000.123456) vcan0 123#DEADBEEF"
+        );
+        // With -x: where the frame came from, and the CAN FD bits.
+        assert_eq!(
+            log_line("(1700000000.123456) ", "vcan0", 5, &rx, true),
+            "(1700000000.123456) vcan0 123#DEADBEEF T"
+        );
+        let with = |text: &str, local: bool| {
+            let frame: Frame = text.parse().unwrap();
+            let rx = RxFrame { frame, local, ..rx };
+            format!(
+                "{}{}",
+                extra_info(&rx),
+                long_frame_view(&frame, true, DataView::default())
+            )
+        };
+        assert_eq!(
+            plain_line("", "vcan9", 5, &with("123#DEADBEEF", true)),
+            "  vcan9  TX - -       123   [4]  DE AD BE EF"
+        );
+        assert_eq!(
+            plain_line("", "vcan9", 5, &with("123##3AA", true)),
+            "  vcan9  TX B E       123  [01]  AA"
+        );
+        assert_eq!(
+            plain_line("", "vcan9", 5, &with("123##0AA", false)),
+            "  vcan9  RX - -       123  [01]  AA"
+        );
+    }
+
+    #[test]
+    fn colours_and_drop_counts_match_can_utils() {
+        let body = "123   [1]  01";
+        // Once: the interface name, in its interface's colour.
+        assert_eq!(
+            coloured_line("", "vc1", 3, body, 1, 0),
+            "  \x1b[1m\x1b[34mvc1\x1b[0m  123   [1]  01"
+        );
+        assert_eq!(
+            coloured_line("", "vc2", 3, body, 1, 1),
+            "  \x1b[1m\x1b[31mvc2\x1b[0m  123   [1]  01"
+        );
+        // The fourth is only bold, and the seventh starts over.
+        assert_eq!(
+            coloured_line("", "vc4", 3, body, 1, 3),
+            "  \x1b[1mvc4\x1b[0m  123   [1]  01"
+        );
+        assert_eq!(
+            coloured_line("", "vc7", 3, body, 1, 6),
+            "  \x1b[1m\x1b[34mvc7\x1b[0m  123   [1]  01"
+        );
+        // Twice: the line. Three times: the timestamp too.
+        assert_eq!(
+            coloured_line("", "vc1", 3, body, 2, 0),
+            "  \x1b[1m\x1b[34mvc1  123   [1]  01\x1b[0m"
+        );
+        assert_eq!(
+            coloured_line("(1794854338.295894) ", "vc1", 3, body, 3, 0),
+            " \x1b[1m\x1b[34m(1794854338.295894)  vc1  123   [1]  01\x1b[0m"
+        );
+        assert_eq!(
+            drop_line(2991, "vc1", 2991),
+            "DROPCOUNT: dropped 2991 CAN frames on 'vc1' socket (total drops 2991)"
+        );
+        assert_eq!(
+            drop_line(1, "can0", 5),
+            "DROPCOUNT: dropped 1 CAN frame on 'can0' socket (total drops 5)"
         );
     }
 }

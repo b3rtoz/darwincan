@@ -79,6 +79,7 @@ As on Linux, a bus opened without `fd=True` does not receive the CAN FD frames o
 
 The following points differ from `socketcan`:
 
+- **`is_rx` is False for every frame that a program on this Mac sent,** your own bus or another, and True for a frame that came from the bus. python-can's `socketcan` interface does the same on Linux.
 - **Timestamps** come from the daemon, which takes them from the adapter's own clock where the adapter has one. They are in seconds since the Unix epoch, on a clock that never steps. The difference between two timestamps is exact, however late Python reads the messages. A float holds a timestamp to about a quarter of a microsecond.
 - **`send` never waits**, so its `timeout` is not used. It fails at once with `can.CanOperationError` on an interface that is down, bus-off or unplugged.
 - **A frame that the adapter could not put on the bus** after the daemon accepted it (because nothing on the bus acknowledges and the adapter is full) cannot be reported by the `send` call, which returned long before. Instead, the next `recv` logs the failure as a warning on the `can.darwincan` logger and counts it in `bus.transmit_failures`. It does not raise an exception, so a `can.Notifier` keeps running.

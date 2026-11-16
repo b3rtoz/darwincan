@@ -96,6 +96,9 @@ pub struct can_filter {
 
 /// Set in [`dcan_rx_info::flags`] when the receiving socket sent the frame.
 pub const DCAN_RX_OWN: u32 = 1;
+/// Set in [`dcan_rx_info::flags`] when a program on this machine sent the
+/// frame, the receiving socket or another.
+pub const DCAN_RX_LOCAL: u32 = 2;
 
 /// What the daemon knows about a received frame besides its contents.
 #[repr(C)]
@@ -753,13 +756,15 @@ pub unsafe extern "C" fn dcan_raw_recv(
                 frame,
                 timestamp_ns,
                 own,
+                local,
                 ifindex,
                 dropped,
             })) => {
                 if let Some(info) = info.as_mut() {
                     *info = dcan_rx_info {
                         timestamp_ns,
-                        flags: if own { DCAN_RX_OWN } else { 0 },
+                        flags: if own { DCAN_RX_OWN } else { 0 }
+                            | if local { DCAN_RX_LOCAL } else { 0 },
                         // The count wraps, as on Linux.
                         dropped: dropped as u32,
                         ifindex,

@@ -163,6 +163,7 @@ dcan_raw_close(s);
 | `CAN_RAW_FD_FRAMES` | Delete it |
 | `SO_TIMESTAMP`, `SO_TIMESTAMPING`, `SIOCGSTAMP` | `info.timestamp_ns` from `dcan_raw_recv` |
 | `MSG_CONFIRM` in `msg_flags` (own frame) | `info.flags & DCAN_RX_OWN` |
+| `MSG_DONTROUTE` in `msg_flags` (a frame sent on this machine) | `info.flags & DCAN_RX_LOCAL` |
 | `poll` or `select` on the socket | `poll` or `select` on `dcan_raw_fileno(sock)` |
 | A `CAN_ISOTP` socket, `CAN_ISOTP_OPTS`, `CAN_ISOTP_RECV_FC`, `CAN_ISOTP_LL_OPTS` | `dcan_isotp_open` with a `struct dcan_isotp_options` |
 | `write` and `read` on it | `dcan_isotp_send`, `dcan_isotp_recv` |

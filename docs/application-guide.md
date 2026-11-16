@@ -128,6 +128,7 @@ if rx.dropped > 0 {
 | `CAN_RAW_ERR_FILTER`     | `set_error_filter`                                                                   |
 | `CAN_RAW_LOOPBACK`       | `set_loopback`                                                                       |
 | `CAN_RAW_RECV_OWN_MSGS`  | `set_recv_own_msgs`; `RxFrame::own` marks them                                     |
+| `MSG_DONTROUTE` on a received frame | `RxFrame::local`: a program on this machine sent it |
 | `CAN_RAW_JOIN_FILTERS`   | `set_join_filters`                                                                   |
 | `SO_TIMESTAMP`           | Always provided, as `RxFrame::timestamp_ns`                                                |
 | `SO_RXQ_OVFL`            | Always provided, as `RxFrame::dropped` and `RawSocket::dropped()`                           |

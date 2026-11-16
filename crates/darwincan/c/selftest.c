@@ -141,6 +141,8 @@ static void raw_frames(void)
 	CHECK(got_classic->can_id == 0x123 && got_classic->len == 3);
 	CHECK(memcmp(got_classic->data, classic.data, 3) == 0);
 	CHECK(info.timestamp_ns != 0 && (info.flags & DCAN_RX_OWN) == 0);
+	/* Sent by another socket on this machine. */
+	CHECK((info.flags & DCAN_RX_LOCAL) != 0);
 
 	CHECK(dcan_raw_recv(b, &got, NULL, 2000) == (int)CAN_MTU);
 	CHECK(got.can_id == (0x124 | CAN_RTR_FLAG) && got.len == 4);
