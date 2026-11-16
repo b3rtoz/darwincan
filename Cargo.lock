@@ -76,6 +76,7 @@ dependencies = [
  "darwincan-core",
  "darwincan-isotp",
  "darwincan-j1939",
+ "darwincan-utils",
  "futures-core",
  "nusb",
 ]

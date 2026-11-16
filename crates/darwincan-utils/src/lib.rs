@@ -10,6 +10,9 @@ use darwincan::{
     CAN_SFF_MASK,
 };
 
+pub mod acd;
+pub mod j1939;
+
 /// Print `tool: message` to stderr and return a failure exit code.
 pub fn fail(tool: &str, message: impl Display) -> ExitCode {
     eprintln!("{tool}: {message}");
@@ -122,6 +125,69 @@ pub fn getopt(args: impl IntoIterator<Item = String>, spec: &str) -> Result<Opts
         }
     }
     Ok(opts)
+}
+
+/// Rewrite GNU long options into the short ones [`getopt`] takes:
+/// `--range=80` and `--range 80` become `-r 80`, by the pairs in `names`.
+/// An option that is not in `names` is an error.
+pub fn long_options(
+    args: impl IntoIterator<Item = String>,
+    names: &[(&str, char)],
+) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        let Some(long) = arg.strip_prefix("--").filter(|l| !l.is_empty()) else {
+            let last = arg == "--";
+            out.push(arg);
+            if last {
+                out.extend(args);
+                break;
+            }
+            continue;
+        };
+        let (name, value) = match long.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (long, None),
+        };
+        let Some((_, short)) = names.iter().find(|(n, _)| *n == name) else {
+            return Err(format!("unknown option: --{name}"));
+        };
+        out.push(format!("-{short}"));
+        out.extend(value.map(str::to_string));
+    }
+    Ok(out)
+}
+
+/// The date and time as C's `ctime` writes it, without the newline:
+/// `Mon Nov 16 08:43:39 2026`.
+pub fn ctime(unix_secs: u64) -> String {
+    const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let t = local_time(unix_secs);
+    // Days since 1970-01-01, a Thursday, for the local date.
+    let (y, m) = if t.month <= 2 {
+        (i64::from(t.year) - 1, i64::from(t.month) + 9)
+    } else {
+        (i64::from(t.year), i64::from(t.month) - 3)
+    };
+    let days = 365 * y + y.div_euclid(4) - y.div_euclid(100)
+        + y.div_euclid(400)
+        + (153 * m + 2) / 5
+        + i64::from(t.day)
+        - 719_469;
+    format!(
+        "{} {} {:2} {:02}:{:02}:{:02} {}",
+        DAYS[days.rem_euclid(7) as usize],
+        MONTHS[(t.month as usize - 1).min(11)],
+        t.day,
+        t.hour,
+        t.minute,
+        t.second,
+        t.year
+    )
 }
 
 /// True if the arguments ask for help.

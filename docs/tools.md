@@ -74,6 +74,11 @@ Settings are remembered while an interface is down, so the two-step form (`link 
 | `canplayer` | Replays a `candump -l` log with its original timing |
 | `isotpsend` | Sends one ISO-TP message, read as hex bytes from standard input |
 | `isotprecv` | Receives ISO-TP messages and prints them as hex bytes |
+| `j1939acd` | Claims a J1939 address for a NAME and defends it, so that programs can use the NAME |
+| `j1939spy` | Prints the J1939 messages on an interface, one to a line |
+| `j1939cat` | Sends a file as J1939 messages, or receives one message and writes it out |
+| `j1939sr` | Sends what it reads from standard input as J1939 messages, and writes out what it receives |
+| `testj1939` | Sends and receives J1939 messages to try things out |
 | `canctl` | Manages interfaces, and measures delivery latency (`canctl latency vcan0`) |
 
 Every tool prints its options with `-h`.
@@ -95,11 +100,41 @@ echo 22 F1 90 | isotpsend -s 7E0 -d 7E8 vcan0
 
 The ISO-TP tools take their addresses as `-s <transmit id> -d <receive id>`, and they take `-p` (padding), `-b` (block size), `-m` (STmin) and `-L` (CAN FD link layer) as on Linux.
 
+## The J1939 tools
+
+```sh
+j1939spy -P can0                                # every J1939 message on can0
+j1939spy -P -ta can0:80,FEF1                    # with time; only PGN FEF1 from address 80
+
+testj1939 -B -r can0:0x90 &                     # receive as address 0x90, and print
+testj1939 -s20 can0:0x80 :0x90,0x12300          # send 20 bytes from 0x80 to 0x90
+
+j1939cat can0:0x90 -r > received.bin &          # receive one message into a file
+j1939cat -i some.bin can0:0x80 :0x90,0x12300    # send a file, of any length up to 117 MB
+
+j1939acd -r 0x80-0x8F -c /tmp/1122334455667788.jacd 1122334455667788 can0 &
+```
+
+An address is written in one of two ways, as in can-utils. `testj1939` and `j1939cat` take `[IFACE][:[SA][,[PGN][,NAME]]]` with numbers as C writes them (`0x80`, `128`). `j1939spy` and `j1939sr` take `[IFACE:][NAME|SA][,PGN]` in hex without a prefix, where a number of up to two digits is an address and a longer one is a NAME.
+
+`j1939acd` is the address claiming daemon. It asks which addresses are taken, waits 1.25 s for the answers, claims the first free address in its range (or the one kept in its cache file, or the one given with `-a`), answers requests for it, and moves to another address when a NAME with priority claims the one it has. A program that opens its J1939 socket bound to the NAME alone then sends from, and receives for, whatever address `j1939acd` holds. When it is told to end (Ctrl-C or `kill`), it gives the address up on the bus and writes it to the cache file for the next run. If no address in its range is left, it says so on the bus and ends.
+
+`j1939spy` shows, for each message, the interface and sender, the parameter group, the destination (`-` for everyone), the priority, the length and the data:
+
+```
+ can0:80,0fef1 - !6 [8] 01020304 05060708
+ can0:1122334455667788,0ef00 90 !6 [2] aabb
+ 80,0feb0 - !7 [20] 01234567 89abcdef 01234567 89abcdef 01234567
+```
+
+A sender is shown by its NAME once it has claimed its address. A message that came in several frames is shown without the interface, as on Linux.
+
 ## Coming from Linux
 
 | Linux | Here |
 |---|---|
 | `candump`, `cansend`, `cangen`, `canplayer`, `isotpsend`, `isotprecv` | The same names and options, and the same syntax for frames and filters |
+| `j1939acd`, `j1939spy`, `j1939cat`, `j1939sr`, `testj1939` | The same names, options, address syntax and output |
 | `ip link ...` | `canctl link ...`: replace `ip` with `canctl` |
 | `sudo modprobe vcan` | This step is not needed |
 | The kernel is always there | Run `darwincand install` once, so that the daemon is always there too |
@@ -112,6 +147,13 @@ The following differences are worth knowing:
 - **`candump -e` receives all error frames by itself.** On Linux it also needs a `#<mask>` filter.
 - **`canplayer` sends each frame at its logged time** instead of polling every `-g` milliseconds, so `-g` has no effect.
 - **A frame you send on a hardware interface is shown once it has been on the bus**, with the adapter's timestamp. A frame that nobody acknowledges is not shown.
+- **The J1939 tools need an interface to be named.** On Linux some of them fall back to `can0` or to every interface; here only `j1939acd` falls back to `can0`.
+- **`j1939spy` without `-P` shows nothing,** as on Linux: its socket has no address of its own. A parameter group given without a sender (`can0:,FEF1`) filters here; on Linux it was seen not to.
+- **`-v` on the J1939 tools does not print Linux's system calls.** `testj1939 -v` prints the calls of darwinCAN's C API in their place; `j1939acd -v` prints its other lines (`claimed 0x80`, `address collision for 0x80`) and leaves the calls out. `j1939acd -p` is accepted and, as in can-utils 2023.03, changes nothing that is printed.
+- **`testj1939 -p=3` sets priority 3.** In can-utils 2023.03 the form with `=` sets priority 0; `-p3` works in both.
+- **`j1939cat` reports less of a message's progress.** It prints `TX ACK` when a message is out and `TX ABT` when it was given up, with Linux's error number and text, and exits with that number. The `TX ENQ` lines Linux prints while a long message is under way are not printed. With `-s`, the input is sent in pieces of that size, each as one message.
+- **`j1939sr` sends with a parameter group.** It takes the one in DEST or, failing that, the one in SOURCE, and refuses to send without one. In can-utils 2023.03 it sends with no valid parameter group.
+- **Address claims that collide on the bus are not spaced out.** SAE J1939-81 asks for a random delay before a claim is sent again after a bus error. The adapters repeat a frame by themselves, so `j1939acd` cannot do that.
 - **The following are not available:** `candump -x`, `-c`, `-i`, `-S`, `-d`, `-D` and `-r`; `cangen -a`, `-t`, `-X` and `-8`; `canplayer -i`; bit timing by segments (`tq`, `prop-seg` and so on), `restart-ms`, `loopback on`, `one-shot on` and `triple-sampling on`. Each is refused with a message and is never silently ignored.
 
 ## Troubleshooting

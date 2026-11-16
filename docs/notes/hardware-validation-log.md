@@ -521,6 +521,26 @@ Two faults were found. The daemon did not put on the bus what a J1939 stack stil
 
 Not done: more than one message at a time, address claiming between the two (NAMEs), Linux's J1939 tools against darwinCAN's (there are none yet), a clear-to-send during a transfer, and anything through the Kvaser backend, which was not in use because Linux had the adapter.
 
+### The J1939 tools against can-utils (2026-11-16)
+
+The same bench as the run before: X6 connector CAN1 (`can0` on the Mac) and the Kvaser's channel 1 in the Linux virtual machine (`can0` there, kernel 6.8, can-utils 2023.03), 250 kbit/s, nothing else on the bus. Each tool ran against the original of the same name or beside it.
+
+| Check | Result |
+|---|---|
+| `j1939spy -P can0` on both machines, watching one frame, 5 and 20 bytes to an address and a 20-byte broadcast sent by `testj1939` from each side | The lines are the same, character for character, for every message both saw. Each side showed the other's 20-byte message to its own address and not its own to the other, as a promiscuous socket does on Linux |
+| `testj1939 -B -r` on both machines for the same traffic | The same output on both, with the 20-byte messages in three lines |
+| `j1939acd` on Linux with the lower NAME and one address, then darwinCAN's with a higher NAME and two | darwinCAN's asked, heard Linux's claim, and took the other address |
+| The same with the roles exchanged | Linux's took the other address. Frames and output were the mirror image of the case above |
+| darwinCAN's `j1939acd` holding 0x80 with the higher NAME; Linux's, with the lower NAME and 0x80 as its only address, claims it | darwinCAN's said `address collision for 0x80` and claimed 0x81 2.6 ms after Linux's claim |
+| The same with the roles exchanged | Linux's moved to 0x81 2.3 ms after darwinCAN's claim, with the same output |
+| `j1939cat` to `j1939cat -r`, 5, 100 and 2000 bytes, each way | All intact. The lines printed were the same, apart from what is listed below |
+
+Differences seen: Linux's `j1939cat -r` gives the bytes received so far in its second `RX DPO` line (`send=0001785`) where darwinCAN's printed 0, which was corrected after the run and not run again on the bench; and the transport frames of darwinCAN carried priority 7 where Linux's carry the message's, which `j1939spy` showed as `!7` and `!6`. That was changed after the run as well: they now carry the message's priority (see the decisions record). A second run on the same bench confirmed it: 20 bytes to an address at priority 3 and a 20-byte broadcast at priority 2, sent with `testj1939` from each side, were shown as `!3` and `!2` by `j1939spy` on both machines, both sides' frames had the identifiers `0CEC`, `0CEB`, `08EC` and `08EB`, and each side answered the other at the priority its frames came with.
+
+Before this run, the originals were watched on a virtual interface inside the virtual machine to learn what they print and send, and darwinCAN's tools were run through the same cases on a virtual interface of their own. `j1939acd` sent the same frames in the same order in a case of fifteen frames (claim, three contentions, two requests, no address left).
+
+Not done: `j1939sr` against the original, which could be made to run in one case only on Linux; a program bound to a NAME exchanging long messages while `j1939acd` moves the address; and `j1939acd` on a bus where two claims collide.
+
 ## Bugs found on hardware and fixed
 
 | Symptom | Cause | Fixed |
@@ -550,7 +570,7 @@ Needs the current wiring:
 - **A second "bus off" from the classic PCAN-USB when it is restarted** after a bus-off, just before "error active". Seen in one of two restarts. Harmless, since "error active" follows, but wrong.
 - **Bus-off counters on the X6** read tx 127 in its bus-off report, where the classic PCAN-USB reads 248.
 - **Automatic bus-off recovery** (`restart-ms`) does not exist; recovery is down and up by hand.
-- **J1939 against a real ECU.** It has run against Linux's stack (2026-11-16) but not against a device. Address claiming and several messages at once have not been run against Linux either.
+- **J1939 against a real ECU.** It has run against Linux's stack and tools (2026-11-16) but not against a device. Several messages at once have not been run against Linux either.
 - **Kept names with the adapters plugged in in another order.** The names are kept since 2026-11-15 and held over three daemon starts (see "Names, indices and the rest of the Linux behaviour"), but the adapters have not been unplugged and plugged in the other way round since, nor the classic PCAN-USB moved to another port.
 - **Unplug during sleep, and sleep with an ISO-TP transfer in flight.**
 - **Mid-flood timestamp glitch on the X6.** Seen once on 2026-11-12: five frames in a back-to-back flood got the same timestamp. Probably the calibration message fault fixed on 2026-11-13 (see the bugs table); not seen again, but not reproduced on purpose either.

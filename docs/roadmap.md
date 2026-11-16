@@ -16,6 +16,7 @@ darwinCAN is at version 0.1. It is usable and has been tested on real buses, but
 | Broadcast manager (`CAN_BCM`) | Working, and tested on hardware. |
 | SAE J1939 (`CAN_J1939`), including BAM, RTS/CTS and the extended transport protocol | Working. Tested against itself and against Linux's J1939 stack on one bus, not yet against a J1939 device. |
 | Command-line tools (`candump`, `cansend`, `cangen`, `canplayer`, `isotpsend`, `isotprecv`, `canctl`) | Working. |
+| J1939 tools (`j1939acd`, `j1939spy`, `j1939cat`, `j1939sr`, `testj1939`) | Working. Compared with can-utils 2023.03 on one bus, except `j1939sr`, which was compared for one case only. |
 | Rust library, C library and Python package | Working. There is no stability promise yet. |
 | Launch agent (`darwincand install`) | The mechanism is covered by tests, but it has seen little everyday use so far. |
 
@@ -27,9 +28,8 @@ The items below are listed roughly in the order they are likely to be done.
 
 | Item | Notes |
 |---|---|
-| J1939 tools | `j1939spy`, `j1939cat`, `j1939sr` and `testj1939`, as in can-utils, and `j1939acd` to claim and defend an address. |
 | J1939 from Python | A socket class over the C API, in the same way that `IsoTpSocket` wraps ISO-TP. |
-| J1939 checked against a device | Messages of every kind have been exchanged with Linux's `CAN_J1939` on one bus. A real J1939 device, address claiming against another implementation, and several messages at once are still to do. |
+| J1939 checked against a device | Messages of every kind have been exchanged with Linux's `CAN_J1939` on one bus, and addresses have been claimed and contended for against can-utils' `j1939acd`. A real J1939 device and several messages at once are still to do. |
 | J1939 extended transport protocol checked against ISO 11783-3 | The transport protocol for up to 1785 bytes follows SAE J1939-21. The extended protocol has not been compared with its standard, and it does not ask again for a missing packet. |
 | Automatic bus-off recovery (`restart-ms`) | Today an interface that has gone bus-off has to be taken down and brought up again by hand. |
 | Kvaser "leaf" backend | Support for the Leaf Light v2 and Kvaser's other older adapters. |

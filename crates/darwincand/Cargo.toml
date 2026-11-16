@@ -16,3 +16,4 @@ nusb = "0.2.9"
 
 [dev-dependencies]
 darwincan = { path = "../darwincan" }
+darwincan-utils = { path = "../darwincan-utils" }

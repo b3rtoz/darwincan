@@ -24,8 +24,8 @@ use std::collections::VecDeque;
 use std::fmt;
 
 use darwincan_core::j1939::{
-    abort, pgn_is_pdu1, pgn_is_valid, DEFAULT_PRIORITY, FILTER_MAX, MAX_ETP_SIZE, MAX_TP_SIZE,
-    MAX_UNICAST_ADDR, NO_ADDR, NO_NAME, PGN_ADDRESS_CLAIMED, PGN_MAX,
+    abort, pgn_is_pdu1, pgn_is_valid, DEFAULT_PRIORITY, FILTER_MAX, IDLE_ADDR, MAX_ETP_SIZE,
+    MAX_TP_SIZE, MAX_UNICAST_ADDR, NO_ADDR, NO_NAME, PGN_ADDRESS_CLAIMED, PGN_MAX, PGN_REQUEST,
 };
 use darwincan_core::{
     Frame, Id, J1939Addr, J1939Filter, J1939Message, J1939Notice, J1939NoticeKind, CAN_EFF_MASK,
@@ -63,8 +63,6 @@ pub const BAM_GAP_NS: u64 = 50 * MS;
 /// How long after an address claim the address counts as the NAME's.
 pub const CLAIM_NS: u64 = 250 * MS;
 
-/// The priority of the transport protocols' own frames.
-const TP_PRIORITY: u8 = 7;
 /// The most packets asked for with one clear-to-send.
 const MAX_BLOCK: u32 = 255;
 /// How much may wait to be sent before a send is refused.
@@ -206,6 +204,10 @@ struct TxSession {
     /// The first packet of the block asked for last. The receiver may ask
     /// again for packets from there on, not for earlier ones.
     block: u32,
+    /// The message's priority, which its transport frames carry too, so
+    /// that it is seen on the bus and by the receiver. SAE J1939-21 gives
+    /// 7 as the default for those frames; Linux sends them as here.
+    priority: u8,
     deadline: u64,
 }
 
@@ -247,6 +249,9 @@ struct RxSession {
     granted: bool,
     /// How often packets have been asked for again.
     retries: u8,
+    /// The priority the sender's frames came with: the answers go out
+    /// with the same.
+    priority: u8,
     deadline: u64,
     /// The local socket whose message this is, which is not given it.
     exclude: Option<SocketId>,
@@ -428,7 +433,15 @@ impl J1939 {
             if self.tx[i].socket == id {
                 let s = self.tx.remove(i);
                 if s.kind != Kind::Bam && s.state != TxState::Queued {
-                    self.push_abort(s.kind, Role::Originator, s.sa, s.da, s.pgn, abort::OTHER);
+                    self.push_abort(
+                        s.kind,
+                        Role::Originator,
+                        s.priority,
+                        s.sa,
+                        s.da,
+                        s.pgn,
+                        abort::OTHER,
+                    );
                 }
             } else {
                 i += 1;
@@ -457,6 +470,14 @@ impl J1939 {
             .map_or(NO_NAME, |c| c.name)
     }
 
+    /// The NAME that has `addr`, once its claim has stood long enough.
+    fn settled_name_of(&self, addr: u8, now: u64) -> u64 {
+        self.claims
+            .iter()
+            .find(|c| c.addr == addr && now >= c.valid_at)
+            .map_or(NO_NAME, |c| c.name)
+    }
+
     /// The address `name` has claimed, once the claim has stood long
     /// enough.
     fn addr_of(&self, name: u64, now: u64) -> Option<u8> {
@@ -467,23 +488,95 @@ impl J1939 {
     }
 
     fn claimed(&mut self, sa: u8, name: u64, now: u64) {
+        // The addresses that change hands: the one this NAME had, and
+        // the one it takes from another NAME.
+        let had = self.claims.iter().find(|c| c.name == name).map(|c| c.addr);
+        let mut lost: Vec<(u64, u8)> = Vec::new();
+        if let Some(addr) = had.filter(|addr| *addr != sa) {
+            lost.push((name, addr));
+        }
         self.claims.retain(|c| c.name != name);
-        if !is_unicast(sa) || name == NO_NAME {
-            // It could not claim an address: it has none now.
-            return;
-        }
-        if let Some(i) = self.claims.iter().position(|c| c.addr == sa) {
+        if is_unicast(sa) && name != NO_NAME {
+            let holder = self.claims.iter().position(|c| c.addr == sa);
             // The lower NAME keeps a contested address.
-            if self.claims[i].name < name {
-                return;
+            if holder.map_or(true, |i| self.claims[i].name > name) {
+                if let Some(i) = holder {
+                    lost.push((self.claims[i].name, sa));
+                    self.claims.remove(i);
+                }
+                self.claims.push(Claim {
+                    name,
+                    addr: sa,
+                    valid_at: now + CLAIM_NS,
+                });
             }
-            self.claims.remove(i);
         }
-        self.claims.push(Claim {
-            name,
-            addr: sa,
-            valid_at: now + CLAIM_NS,
+        // Otherwise it could not claim an address: it has none now.
+        for (name, addr) in lost {
+            if self.sockets.iter().any(|s| s.bound.name == name) {
+                self.lost_address(name, addr, now);
+            }
+        }
+    }
+
+    /// A NAME that a socket here is bound to no longer has `addr`: what
+    /// was being sent from it and received for it ends, without an abort
+    /// message; the other end finds out by its timeout (SAE J1939-81,
+    /// 5.9.10). A broadcast being received goes on.
+    fn lost_address(&mut self, name: u64, addr: u8, now: u64) {
+        self.control.retain(|(f, _)| {
+            let h = parse(f);
+            !h.is_some_and(|h| h.sa == addr && h.pgn != PGN_ADDRESS_CLAIMED)
         });
+        let mut i = 0;
+        while i < self.tx.len() {
+            if self.tx[i].sa == addr {
+                let s = self.tx.remove(i);
+                let mut notice = self.make_notice(
+                    J1939NoticeKind::TxAborted,
+                    s.sa,
+                    s.da,
+                    s.pgn,
+                    s.data.len(),
+                    abort::OTHER,
+                    now,
+                );
+                notice.acked = s.acked(false);
+                self.notice_tx(s.socket, notice);
+            } else {
+                i += 1;
+            }
+        }
+        let mut i = 0;
+        while i < self.rx.len() {
+            if self.rx[i].kind != Kind::Bam && self.rx[i].da == addr {
+                let s = self.rx.remove(i);
+                let mut notice = self.make_notice(
+                    J1939NoticeKind::RxAborted,
+                    s.sa,
+                    s.da,
+                    s.pgn,
+                    s.size,
+                    abort::OTHER,
+                    now,
+                );
+                notice.acked = s.data.len() as u32;
+                // The address is not theirs any more, so the sockets it
+                // was for are found by the NAME.
+                let to: Vec<SocketId> = self
+                    .sockets
+                    .iter()
+                    .filter(|t| t.bound.name == name && t.notices && Some(t.id) != s.exclude)
+                    .map(|t| t.id)
+                    .collect();
+                for id in to {
+                    self.out.push_back((id, Output::Notice(notice)));
+                }
+            } else {
+                i += 1;
+            }
+        }
+        self.start_queued(now);
     }
 
     /// The address a socket has: the one its NAME has claimed, or the one
@@ -554,19 +647,22 @@ impl J1939 {
         if to.is_empty() {
             return;
         }
+        // A NAME is given once its claim has stood long enough, as it is
+        // on Linux; the claim itself says whose it is.
+        let src_name = if h.pgn == PGN_ADDRESS_CLAIMED && data.len() == 8 {
+            u64::from_le_bytes(data.try_into().expect("eight bytes"))
+        } else {
+            self.settled_name_of(h.sa, timestamp_ns)
+        };
         let msg = J1939Message {
             timestamp_ns,
             src: J1939Addr {
-                name: self.name_of(h.sa),
+                name: src_name,
                 pgn: h.pgn,
                 addr: h.sa,
             },
             dst_addr: h.da,
-            dst_name: if is_unicast(h.da) {
-                self.name_of(h.da)
-            } else {
-                NO_NAME
-            },
+            dst_name: self.settled_name_of(h.da, timestamp_ns),
             priority: h.priority,
             data: data.to_vec(),
         };
@@ -655,6 +751,14 @@ impl J1939 {
                     return Err(SendError::NameMismatch);
                 }
                 s.bound.addr
+            } else if pgn == PGN_REQUEST
+                && data[..] == pgn_bytes(PGN_ADDRESS_CLAIMED)
+                && self.claims.iter().all(|c| c.name != s.bound.name)
+            {
+                // The other message a NAME may send without an address:
+                // a request for the address claims of others, from the
+                // null address (SAE J1939-81, 5.9.3).
+                IDLE_ADDR
             } else {
                 self.addr_of(s.bound.name, now)
                     .ok_or(SendError::AddressNotAvailable)?
@@ -707,6 +811,7 @@ impl J1939 {
             last: 0,
             offset: 0,
             block: 1,
+            priority,
             deadline: 0,
         });
         self.start_queued(now);
@@ -773,13 +878,23 @@ impl J1939 {
             } else {
                 PGN_TP_CM
             };
-            let (da, sa, socket) = (s.da, s.sa, s.socket);
+            let (priority, da, sa, socket) = (s.priority, s.da, s.sa, s.socket);
             self.control
-                .push_back((frame(TP_PRIORITY, cm, da, sa, &announce), Some(socket)));
+                .push_back((frame(priority, cm, da, sa, &announce), Some(socket)));
         }
     }
 
-    fn push_abort(&mut self, kind: Kind, role: Role, from: u8, to: u8, pgn: u32, reason: u8) {
+    #[allow(clippy::too_many_arguments)]
+    fn push_abort(
+        &mut self,
+        kind: Kind,
+        role: Role,
+        priority: u8,
+        from: u8,
+        to: u8,
+        pgn: u32,
+        reason: u8,
+    ) {
         let pgn = pgn_bytes(pgn);
         // The transport protocol's abort says in the low two bits of its
         // third byte which end sent it; the extended protocol's does not.
@@ -790,7 +905,7 @@ impl J1939 {
         };
         let data = [CM_ABORT, reason, who, 0xFF, 0xFF, pgn[0], pgn[1], pgn[2]];
         self.control
-            .push_back((frame(TP_PRIORITY, cm, to, from, &data), None));
+            .push_back((frame(priority, cm, to, from, &data), None));
     }
 
     /// End a sending session and tell its socket.
@@ -829,7 +944,7 @@ impl J1939 {
             } else {
                 PGN_TP_DT
             };
-            let out = (frame(TP_PRIORITY, dt, s.da, s.sa, &data), Some(s.socket));
+            let out = (frame(s.priority, dt, s.da, s.sa, &data), Some(s.socket));
             s.next += 1;
             self.turn = i + 1;
             if s.next > s.last {
@@ -890,7 +1005,15 @@ impl J1939 {
     fn fail_rx(&mut self, i: usize, reason: u8, now: u64) {
         let s = self.rx.remove(i);
         if s.kind != Kind::Bam {
-            self.push_abort(s.kind, Role::Responder, s.da, s.sa, s.pgn, reason);
+            self.push_abort(
+                s.kind,
+                Role::Responder,
+                s.priority,
+                s.da,
+                s.sa,
+                s.pgn,
+                reason,
+            );
         }
         let mut notice = self.make_notice(
             J1939NoticeKind::RxAborted,
@@ -938,9 +1061,9 @@ impl J1939 {
                 ],
             )
         };
-        let (to, from) = (s.sa, s.da);
+        let (priority, to, from) = (s.priority, s.sa, s.da);
         self.control
-            .push_back((frame(TP_PRIORITY, cm, to, from, &data), None));
+            .push_back((frame(priority, cm, to, from, &data), None));
     }
 
     /// Packets of a connection went missing: ask for them again from the
@@ -988,6 +1111,7 @@ impl J1939 {
             gap: false,
             granted: false,
             retries: 0,
+            priority: h.priority,
             deadline: now + T1_NS,
             exclude,
         });
@@ -1015,7 +1139,15 @@ impl J1939 {
         }
         if let Some(i) = self.find_rx(h.sa, h.da, kind) {
             if self.rx[i].pgn != pgn {
-                self.push_abort(kind, Role::Responder, h.da, h.sa, pgn, abort::BUSY);
+                self.push_abort(
+                    kind,
+                    Role::Responder,
+                    h.priority,
+                    h.da,
+                    h.sa,
+                    pgn,
+                    abort::BUSY,
+                );
                 return;
             }
             // The sender starts over.
@@ -1026,7 +1158,15 @@ impl J1939 {
             _ => size > 8 && size <= MAX_TP_SIZE,
         };
         if !fits {
-            self.push_abort(kind, Role::Responder, h.da, h.sa, pgn, abort::TOO_BIG);
+            self.push_abort(
+                kind,
+                Role::Responder,
+                h.priority,
+                h.da,
+                h.sa,
+                pgn,
+                abort::TOO_BIG,
+            );
             return;
         }
         self.begin_rx(h, kind, pgn, size, max_block, exclude, now);
@@ -1035,8 +1175,8 @@ impl J1939 {
     /// Give up a message being sent, and tell the receiver and the socket.
     fn abort_tx(&mut self, i: usize, reason: u8, now: u64) {
         let s = &self.tx[i];
-        let (kind, sa, da, pgn) = (s.kind, s.sa, s.da, s.pgn);
-        self.push_abort(kind, Role::Originator, sa, da, pgn, reason);
+        let (kind, priority, sa, da, pgn) = (s.kind, s.priority, s.sa, s.da, s.pgn);
+        self.push_abort(kind, Role::Originator, priority, sa, da, pgn, reason);
         self.finish_tx(i, J1939NoticeKind::TxAborted, reason, now);
     }
 
@@ -1090,9 +1230,9 @@ impl J1939 {
                 pgn[1],
                 pgn[2],
             ];
-            let (da, sa, socket) = (s.da, s.sa, s.socket);
+            let (priority, da, sa, socket) = (s.priority, s.da, s.sa, s.socket);
             self.control
-                .push_back((frame(TP_PRIORITY, PGN_ETP_CM, da, sa, &data), Some(socket)));
+                .push_back((frame(priority, PGN_ETP_CM, da, sa, &data), Some(socket)));
         }
     }
 
@@ -1285,7 +1425,7 @@ impl J1939 {
                     )
                 };
                 self.control
-                    .push_back((frame(TP_PRIORITY, cm, s.sa, s.da, &data), None));
+                    .push_back((frame(s.priority, cm, s.sa, s.da, &data), None));
             }
             let whole = Header {
                 priority: h.priority,
@@ -1376,8 +1516,16 @@ impl J1939 {
         while i < self.tx.len() {
             let s = &self.tx[i];
             if s.state == TxState::Waiting && now >= s.deadline {
-                let (kind, sa, da, pgn) = (s.kind, s.sa, s.da, s.pgn);
-                self.push_abort(kind, Role::Originator, sa, da, pgn, abort::TIMEOUT);
+                let (kind, priority, sa, da, pgn) = (s.kind, s.priority, s.sa, s.da, s.pgn);
+                self.push_abort(
+                    kind,
+                    Role::Originator,
+                    priority,
+                    sa,
+                    da,
+                    pgn,
+                    abort::TIMEOUT,
+                );
                 self.finish_tx(i, J1939NoticeKind::TxAborted, abort::TIMEOUT, now);
                 // Starting the next in line may have changed the list.
                 i = 0;

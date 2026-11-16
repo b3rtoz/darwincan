@@ -20,7 +20,8 @@ includedir = $(DESTDIR)$(PREFIX)/include
 release = target/release
 
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-PROGRAMS = darwincand candump cansend cangen canplayer isotpsend isotprecv canctl
+PROGRAMS = darwincand candump cansend cangen canplayer isotpsend isotprecv canctl \
+	j1939acd j1939spy j1939cat j1939sr testj1939
 
 .PHONY: all check install uninstall
 

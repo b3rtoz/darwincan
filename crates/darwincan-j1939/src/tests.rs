@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
-use darwincan_core::j1939::{IDLE_ADDR, NO_PGN};
+use darwincan_core::j1939::NO_PGN;
 
 /// Two stacks on one bus, with a clock that jumps from one thing to do to
 /// the next. Every frame takes a millisecond.
@@ -322,9 +322,9 @@ fn a_broadcast_of_many_bytes_is_announced_and_paced() {
     net.settle();
     assert_eq!(net.log.len(), 4);
     // BAM: 20 bytes, 3 packets, PGN 0xFEB0, to everyone at priority 7.
-    assert_eq!(net.log[0].2.can_id() & CAN_EFF_MASK, 0x1CEC_FF80);
+    assert_eq!(net.log[0].2.can_id() & CAN_EFF_MASK, 0x18EC_FF80);
     assert_eq!(net.log[0].2.data(), &[32, 20, 0, 3, 0xFF, 0xB0, 0xFE, 0]);
-    assert_eq!(net.log[1].2.can_id() & CAN_EFF_MASK, 0x1CEB_FF80);
+    assert_eq!(net.log[1].2.can_id() & CAN_EFF_MASK, 0x18EB_FF80);
     assert_eq!(net.log[1].2.data()[0], 1);
     // The last packet is filled up with FF.
     assert_eq!(
@@ -354,7 +354,7 @@ fn a_broadcast_with_a_packet_missing_is_not_delivered() {
     net.nodes[0].set_broadcast(1, true).unwrap();
     net.nodes[1].set_broadcast(2, true).unwrap();
     net.nodes[1].set_notices(2, true).unwrap();
-    net.lose = Box::new(|f| f.can_id() & CAN_EFF_MASK == 0x1CEB_FF80 && f.data()[0] == 2);
+    net.lose = Box::new(|f| f.can_id() & CAN_EFF_MASK == 0x18EB_FF80 && f.data()[0] == 2);
     net.nodes[0]
         .send(
             1,
@@ -401,7 +401,7 @@ fn a_long_message_to_one_address_is_a_connection() {
         // Request, clear-to-send, the packets, the acknowledgement.
         assert_eq!(net.log.len(), packets + 3, "{len} bytes");
         let rts = net.log[0].2;
-        assert_eq!(rts.can_id() & CAN_EFF_MASK, 0x1CEC_9080);
+        assert_eq!(rts.can_id() & CAN_EFF_MASK, 0x18EC_9080);
         assert_eq!(
             rts.data(),
             &[
@@ -416,10 +416,10 @@ fn a_long_message_to_one_address_is_a_connection() {
             ]
         );
         let cts = net.log[1].2;
-        assert_eq!(cts.can_id() & CAN_EFF_MASK, 0x1CEC_8090);
+        assert_eq!(cts.can_id() & CAN_EFF_MASK, 0x18EC_8090);
         assert_eq!(cts.data(), &[17, packets as u8, 1, 0xFF, 0xFF, 0, 0xEF, 0]);
         let eoma = net.log.last().unwrap().2;
-        assert_eq!(eoma.can_id() & CAN_EFF_MASK, 0x1CEC_8090);
+        assert_eq!(eoma.can_id() & CAN_EFF_MASK, 0x18EC_8090);
         assert_eq!(eoma.data()[0], 19);
         let out = net.outputs(1);
         assert_eq!(out.len(), 2);
@@ -614,7 +614,7 @@ fn a_connection_nobody_answers_times_out() {
 /// Lose the data packets of 0x80's connection to 0x90 that `which` picks,
 /// by sequence number and by how often that number has been sent.
 fn lose_data(net: &mut Net, etp: bool, mut which: impl FnMut(u8, u32) -> bool + 'static) {
-    let id = if etp { 0x1CC7_9080 } else { 0x1CEB_9080 };
+    let id = if etp { 0x18C7_9080 } else { 0x18EB_9080 };
     let mut seen = [0u32; 256];
     net.lose = Box::new(move |f| {
         if f.can_id() & CAN_EFF_MASK != id {
@@ -976,7 +976,7 @@ fn the_extended_protocol_carries_what_is_longer() {
             .unwrap();
         net.settle();
         let rts = net.log[0].2;
-        assert_eq!(rts.can_id() & CAN_EFF_MASK, 0x1CC8_9080);
+        assert_eq!(rts.can_id() & CAN_EFF_MASK, 0x18C8_9080);
         let size = (len as u32).to_le_bytes();
         assert_eq!(
             rts.data(),
@@ -985,7 +985,7 @@ fn the_extended_protocol_carries_what_is_longer() {
         // Clear-to-send for 255 packets from the first, then the offset.
         assert_eq!(net.log[1].2.data(), &[21, 255, 1, 0, 0, 0, 0xEF, 0]);
         assert_eq!(net.log[2].2.data(), &[22, 255, 0, 0, 0, 0, 0xEF, 0]);
-        assert_eq!(net.log[3].2.can_id() & CAN_EFF_MASK, 0x1CC7_9080);
+        assert_eq!(net.log[3].2.can_id() & CAN_EFF_MASK, 0x18C7_9080);
         assert_eq!(net.log[3].2.data()[0], 1);
         // The second block counts from where the first ended.
         let second: Vec<&Frame> = net
@@ -1259,4 +1259,143 @@ fn a_dead_interface_ends_what_was_going_out() {
     assert_eq!(notices.len(), 1);
     assert_eq!(notices[0].1.kind, J1939NoticeKind::TxAborted);
     assert_eq!(notices[0].1.reason, abort::OTHER);
+}
+
+#[test]
+fn a_name_without_an_address_may_ask_who_has_which() {
+    const TOOL: u64 = 0x1122_3344_5566_7788;
+    let mut net = Net::new();
+    let bound = J1939Addr {
+        name: TOOL,
+        pgn: NO_PGN,
+        addr: NO_ADDR,
+    };
+    net.nodes[0].open(1, bound).unwrap();
+    net.nodes[0].set_broadcast(1, true).unwrap();
+    let request = Some(J1939Addr::broadcast(PGN_REQUEST));
+    // The request for address claimed goes out from the null address.
+    net.nodes[0]
+        .send(1, request, None, vec![0x00, 0xEE, 0x00], net.now)
+        .unwrap();
+    let (f, _) = net.nodes[0].poll_transmit(net.now).unwrap();
+    assert_eq!(f.can_id() & CAN_EFF_MASK, 0x18EA_FFFE);
+    assert_eq!(f.data(), &[0x00, 0xEE, 0x00]);
+    // Nothing else does.
+    assert_eq!(
+        net.nodes[0].send(1, request, None, vec![0xDA, 0xFE, 0x00], net.now),
+        Err(SendError::AddressNotAvailable)
+    );
+}
+
+#[test]
+fn a_name_that_loses_its_address_stops_using_it_without_an_abort() {
+    const OURS: u64 = 0x8000_0000_0000_2222;
+    const LOWER: u64 = 0x8000_0000_0000_1111;
+    let mut net = Net::new();
+    let bound = J1939Addr {
+        name: OURS,
+        pgn: NO_PGN,
+        addr: 0x80,
+    };
+    net.nodes[0].open(1, bound).unwrap();
+    net.nodes[0].set_broadcast(1, true).unwrap();
+    net.nodes[0].set_notices(1, true).unwrap();
+    let claim = Some(J1939Addr::broadcast(PGN_ADDRESS_CLAIMED));
+    net.nodes[0]
+        .send(1, claim, None, OURS.to_le_bytes().to_vec(), net.now)
+        .unwrap();
+    net.settle();
+    net.now += CLAIM_NS;
+    net.outputs(0);
+    // Sending 100 bytes to 0x55, and receiving 30 from 0x33.
+    net.nodes[0]
+        .send(
+            1,
+            Some(J1939Addr::new(0x55, 0xEF00)),
+            None,
+            payload(100),
+            net.now,
+        )
+        .unwrap();
+    let t0 = net.now;
+    net.nodes[0].poll_transmit(t0).unwrap();
+    let rts = frame(7, PGN_TP_CM, 0x80, 0x33, &[16, 30, 0, 5, 0xFF, 0, 0xEF, 0]);
+    net.nodes[0].on_frame(&rts, t0, t0, Origin::Bus);
+    net.nodes[0].poll_transmit(t0).unwrap();
+    assert_eq!((net.nodes[0].tx.len(), net.nodes[0].rx.len()), (1, 1));
+    // A lower NAME claims the address.
+    let theirs = frame(6, PGN_ADDRESS_CLAIMED, NO_ADDR, 0x80, &LOWER.to_le_bytes());
+    net.nodes[0].on_frame(&theirs, t0, t0, Origin::Bus);
+    assert!(net.nodes[0].tx.is_empty() && net.nodes[0].rx.is_empty());
+    // Nothing is sent about it: the other ends time out.
+    assert!(net.nodes[0].poll_transmit(t0).is_none());
+    let kinds: Vec<J1939NoticeKind> = net.notices(0).iter().map(|(_, n)| n.kind).collect();
+    assert!(kinds.contains(&J1939NoticeKind::TxAborted));
+    assert!(kinds.contains(&J1939NoticeKind::RxAborted));
+    // And the NAME cannot send until it has an address again.
+    assert_eq!(
+        net.nodes[0].send(1, Some(J1939Addr::new(0x55, 0xEF00)), None, vec![1], t0),
+        Err(SendError::AddressNotAvailable)
+    );
+}
+
+#[test]
+fn the_frames_of_a_long_message_carry_its_priority() {
+    let mut net = pair();
+    net.nodes[0].set_broadcast(1, true).unwrap();
+    net.nodes[1].set_broadcast(2, true).unwrap();
+    // To one address at priority 3: the sender's frames and the
+    // receiver's answers all have it, and so has the message delivered.
+    net.nodes[0]
+        .send(
+            1,
+            Some(J1939Addr::new(0x90, 0xEF00)),
+            Some(3),
+            payload(20),
+            net.now,
+        )
+        .unwrap();
+    net.settle();
+    let ids: Vec<u32> = net
+        .log
+        .iter()
+        .map(|(_, _, f)| f.can_id() & CAN_EFF_MASK)
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            0x0CEC_9080, // request to send
+            0x0CEC_8090, // clear to send
+            0x0CEB_9080,
+            0x0CEB_9080,
+            0x0CEB_9080,
+            0x0CEC_8090, // acknowledgement
+        ]
+    );
+    assert_eq!(net.messages(1)[0].1.priority, 3);
+    // To everyone at the socket's priority.
+    net.log.clear();
+    net.nodes[0].set_priority(1, 2).unwrap();
+    net.nodes[0]
+        .send(
+            1,
+            Some(J1939Addr::broadcast(0xFEB0)),
+            None,
+            payload(10),
+            net.now,
+        )
+        .unwrap();
+    net.settle();
+    assert!(net
+        .log
+        .iter()
+        .all(|(_, _, f)| (f.can_id() & CAN_EFF_MASK) >> 26 == 2));
+    assert_eq!(net.messages(1)[0].1.priority, 2);
+    // A sender that uses the standard's default of 7 is answered with it.
+    net.log.clear();
+    let rts = frame(7, PGN_TP_CM, 0x90, 0x33, &[16, 30, 0, 5, 0xFF, 0, 0xEF, 0]);
+    let t0 = net.now;
+    net.nodes[1].on_frame(&rts, t0, t0, Origin::Bus);
+    let (cts, _) = net.nodes[1].poll_transmit(t0).unwrap();
+    assert_eq!(cts.can_id() & CAN_EFF_MASK, 0x1CEC_3390);
 }

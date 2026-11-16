@@ -1,6 +1,6 @@
 [package]
 name = "darwincan-utils"
-description = "Command-line CAN tools for macOS in the style of can-utils: candump, cansend, cangen, canplayer, isotpsend, isotprecv, canctl"
+description = "Command-line CAN tools for macOS in the style of can-utils: candump, cansend, cangen, canplayer, isotpsend, isotprecv, the J1939 tools, canctl"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
