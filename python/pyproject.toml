@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "darwincan"
+version = "0.1.0"
+description = "python-can interface for CAN on macOS through the darwincand daemon"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT OR Apache-2.0" }
+dependencies = ["python-can>=4.5"]
+classifiers = [
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+]
+
+# python-can finds the interface here: can.Bus(interface="darwincan", ...)
+[project.entry-points."can.interface"]
+darwincan = "darwincan.bus:DarwincanBus"
+
+[tool.setuptools]
+packages = ["darwincan"]

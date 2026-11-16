@@ -1,0 +1,10 @@
+[package]
+name = "darwincan-isotp"
+description = "Sans-I/O ISO-TP (ISO 15765-2) protocol state machine for classic CAN and CAN FD"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+darwincan-core = { path = "../darwincan-core" }

@@ -1,0 +1,18 @@
+[package]
+name = "darwincand"
+description = "CAN bus daemon for macOS: owns the adapters and shares them between applications"
+version.workspace = true
+edition.workspace = true
+# The USB library needs this; the other crates stay at the workspace's.
+rust-version = "1.85"
+license = "GPL-2.0-only"
+
+[dependencies]
+darwincan-core = { path = "../darwincan-core" }
+darwincan-isotp = { path = "../darwincan-isotp" }
+darwincan-j1939 = { path = "../darwincan-j1939" }
+futures-core = "0.3.34"
+nusb = "0.2.9"
+
+[dev-dependencies]
+darwincan = { path = "../darwincan" }

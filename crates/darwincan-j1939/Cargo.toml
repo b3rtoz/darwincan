@@ -1,0 +1,10 @@
+[package]
+name = "darwincan-j1939"
+description = "Sans-I/O SAE J1939 stack for one CAN interface: addressing, address claim tracking and the transport protocols"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+darwincan-core = { path = "../darwincan-core" }

@@ -1,0 +1,15 @@
+[package]
+name = "darwincan"
+description = "Client library for the darwinCAN daemon: SocketCAN-style raw and ISO-TP sockets on macOS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+
+[lib]
+# The C library (`libdarwincan.dylib`, `libdarwincan.a`) beside the Rust one;
+# its header is `include/darwincan.h`.
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[dependencies]
+darwincan-core = { path = "../darwincan-core" }

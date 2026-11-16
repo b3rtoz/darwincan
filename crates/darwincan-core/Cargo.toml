@@ -1,0 +1,9 @@
+[package]
+name = "darwincan-core"
+description = "Frame types, filters and the daemon wire protocol shared by darwincand and its clients"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+
+[dependencies]
