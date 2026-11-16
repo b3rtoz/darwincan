@@ -28,7 +28,6 @@ The items below are listed roughly in the order they are likely to be done.
 
 | Item | Notes |
 |---|---|
-| J1939 from Python | A socket class over the C API, in the same way that `IsoTpSocket` wraps ISO-TP. |
 | J1939 checked against a device | Messages of every kind have been exchanged with Linux's `CAN_J1939` on one bus, and addresses have been claimed and contended for against can-utils' `j1939acd`. A real J1939 device and several messages at once are still to do. |
 | J1939 extended transport protocol checked against ISO 11783-3 | The transport protocol for up to 1785 bytes follows SAE J1939-21. The extended protocol has not been compared with its standard, and it does not ask again for a missing packet. |
 | Automatic bus-off recovery (`restart-ms`) | Today an interface that has gone bus-off has to be taken down and brought up again by hand. |
@@ -38,6 +37,7 @@ The items below are listed roughly in the order they are likely to be done.
 | Packaging | A Homebrew formula, and a Python wheel that includes the C library so that `pip install` is the only step. |
 | ISO-TP extended and mixed addressing | Only normal addressing is supported today. |
 | More tools | `cansniffer`, `isotpdump`, and the `-x` option of `candump`. |
+| A limit in bytes on what one client can queue | Today the limits count messages, so one program can make the daemon hold hundreds of megabytes. See "Robustness work still to do" below. |
 | Long soak tests | Runs lasting hours, at high bus load, with several nodes on the bus. |
 
 Some smaller pieces were left out of features that otherwise exist:

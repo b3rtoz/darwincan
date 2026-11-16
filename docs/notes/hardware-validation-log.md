@@ -541,6 +541,17 @@ Before this run, the originals were watched on a virtual interface inside the vi
 
 Not done: `j1939sr` against the original, which could be made to run in one case only on Linux; a program bound to a NAME exchanging long messages while `j1939acd` moves the address; and `j1939acd` on a bus where two claims collide.
 
+### J1939 from Python against Linux (2026-11-16)
+
+The same bench and settings as the two runs before. A Python program with a `J1939Socket` at address 0x80 on the Mac; `testj1939` and `j1939spy` of can-utils at 0x90 on Linux.
+
+| Check | Result |
+|---|---|
+| Python sends 5 bytes, 100 bytes at priority 3, 2000 bytes, and a 20-byte broadcast at priority 2 | Linux's `testj1939 -r` printed all four, and `j1939spy` showed them with the lengths and the priorities given (`!6`, `!3`, `!6`, `!2`). Python got a notice that each was out, with all its bytes acknowledged |
+| Linux sends 5 bytes, 100 bytes at priority 3 and a 20-byte broadcast at priority 2 | Python received all three with the data as sent and the priorities 6, 3 and 2 |
+
+Not done: 2000 bytes from Linux, because can-utils' `testj1939` sends at most 128; that length crossed in both directions with `j1939cat` in the run before.
+
 ## Bugs found on hardware and fixed
 
 | Symptom | Cause | Fixed |

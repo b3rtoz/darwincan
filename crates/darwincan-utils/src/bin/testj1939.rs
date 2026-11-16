@@ -7,6 +7,7 @@ use std::io::Write;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use darwincan::j1939::MAX_ETP_SIZE;
 use darwincan::{J1939Addr, J1939Event, J1939NoticeKind, J1939Socket};
 use darwincan_utils::fail;
 use darwincan_utils::j1939::{parse_spec, testj1939_data, testj1939_dump, Spec};
@@ -80,11 +81,19 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 'o' => o.omit_bind = true,
                 'n' => o.names = true,
                 's' => {
+                    // Checked here, before that many bytes are made up: the
+                    // daemon would refuse a longer message anyway.
                     o.send = Some(match value {
                         "" => 8,
-                        v => v
-                            .parse()
-                            .map_err(|_| format!("-s: '{v}' is not a length"))?,
+                        v => match v.parse() {
+                            Ok(len) if len <= MAX_ETP_SIZE => len,
+                            Ok(_) => {
+                                return Err(format!(
+                                    "-s: a message is at most {MAX_ETP_SIZE} bytes long"
+                                ))
+                            }
+                            Err(_) => return Err(format!("-s: '{v}' is not a length")),
+                        },
                     });
                     break;
                 }

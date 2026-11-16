@@ -146,9 +146,53 @@ The daemon does the segmentation and the flow control, and keeps the gaps betwee
 
 `recv_timestamped` also returns the time of the message's last frame, and `fileno()` returns a descriptor to wait on, as it does for a bus. One thread may receive while others send; a channel carries one message at a time in each direction.
 
+## J1939
+
+```python
+from darwincan import J1939Message, J1939Socket
+
+with J1939Socket("can0", addr=0x80, broadcast=True) as node:
+    # Ask the engine (address 0) for its software identification.
+    node.send_to(bytes([0xDA, 0xFE, 0x00]), pgn=0xEA00, addr=0x00)
+    message = node.recv(timeout=1.0)             # a J1939Message, or None
+    if message is not None:
+        print(f"PGN {message.pgn:05X} from {message.src_addr:02X}: {message.data.hex()}")
+```
+
+A `J1939Socket` is what a `CAN_J1939` socket is on Linux. It sends and receives whole messages: the daemon builds the 29-bit identifiers and runs the transport protocols for messages of more than eight bytes, so a message of any length is one `send_to` and one `recv`. Up to 1785 bytes can go to everyone and up to 117 MB to one destination. The answer in the example above is longer than eight bytes and still arrives as one message.
+
+| Option | Meaning |
+|---|---|
+| `addr=0x80` | The address to send from and to receive for. Without an address and without a `name`, the socket only listens |
+| `name=0x...` | A 64-bit NAME in place of a fixed address: the socket uses whatever address that NAME has claimed |
+| `pgn=0xFEF1` | Receive this parameter group only |
+| `broadcast=True` | Allow sending to everyone, and receive what is sent to everyone, which is most of the traffic on a vehicle |
+| `promisc=True` | Receive whatever is on the bus, whoever it is for |
+| `priority=3` | The priority of what is sent, 0 (highest) to 7; 6 unless given |
+| `notices=True` | Have `recv` also return `J1939Notice` objects that tell how long messages fare |
+| `filters=[{"addr": 0x00}, {"pgn": 0xFEF1}]` | Receive only what one of the filters matches; see `set_filters` |
+| `max_rx_len` | The most bytes of one message that are handed over (1 MiB by default). A longer message is cut, and its `size` says how long it was |
+
+`send_to(data, pgn, addr)` sends to an address, `send_to(data, pgn, name=...)` to the address a NAME has claimed, and `send_to(data, pgn)` to everyone. After `connect(addr, pgn=...)`, `send(data)` sends there, and the socket receives from that sender only. Both take `priority=` for one message. A send returns when the daemon has taken the message, and raises `J1939Error` at once if it cannot be sent at all: the error's `error_code` is `J1939Socket.ERROR_NOT_PERMITTED` for a broadcast without `broadcast=True`, `ERROR_ADDRESS_NOT_AVAILABLE` for a NAME without an address, `ERROR_TOO_BIG`, `ERROR_INTERFACE_DOWN`, or `ERROR_INVALID_REQUEST` for a socket with nothing to send from. `J1939Error` is a `can.CanOperationError`.
+
+A received `J1939Message` has `data`, `pgn`, `src_addr`, `dst_addr` (`J1939Socket.NO_ADDR` if it was sent to everyone), `priority`, `timestamp`, `src_name`, `dst_name` and `size`.
+
+A long message to one destination needs the destination to answer, so it can fail after `send_to` has returned. With `notices=True`, `recv` returns a `J1939Notice` when a message the socket sent is out (`NOTICE_TX_DONE`) or was given up (`NOTICE_TX_ABORT`, with `reason` one of the `ABORT_*` values), and when a long message for the socket begins (`NOTICE_RX_RTS`), goes on (`NOTICE_RX_DPO`) or is given up (`NOTICE_RX_ABORT`). Tell the two apart with `isinstance`:
+
+```python
+with J1939Socket("can0", addr=0x80, notices=True) as node:
+    node.send_to(bytes(1000), pgn=0xEF00, addr=0x90)
+    notice = node.recv(timeout=5.0)
+    if notice.kind == J1939Socket.NOTICE_TX_ABORT:
+        print("not delivered, abort reason", notice.reason)
+```
+
+A socket bound to a NAME can send once the NAME has claimed an address. Run `j1939acd` for the NAME ([tools.md](tools.md#the-j1939-tools)), or claim it yourself as on Linux: send the NAME, low byte first, as parameter group `J1939Socket.PGN_ADDRESS_CLAIMED` to everyone. [c-api.md](c-api.md#j1939) describes the rest of the behaviour, which is the same from Python.
+
+`fileno()` returns a descriptor to wait on, as it does for a bus, and one thread may receive while others send.
+
 ## Not there
 
-- **J1939.** The daemon and the C library support it ([c-api.md](c-api.md#j1939)), but the Python package does not yet.
 - **The broadcast manager's receive jobs**, which report when a frame changes or stops arriving, are not available. Use the C library or a `can.Notifier` instead.
 - **A wheel that includes the C library** does not exist yet. The library is installed separately, with `make install`.
 

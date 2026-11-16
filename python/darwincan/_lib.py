@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 """The darwinCAN C library, loaded with ctypes: the structs and functions of
-``darwincan.h`` and ``darwincan_bcm.h`` that this package uses."""
+``darwincan.h``, ``darwincan_bcm.h`` and ``darwincan_j1939.h`` that this
+package uses."""
 
 import ctypes
 import ctypes.util
@@ -153,6 +154,40 @@ class bcm_msg_head(Structure):
     ]
 
 
+class dcan_j1939_addr(Structure):
+    _fields_ = [
+        ("name", c_uint64),
+        ("pgn", c_uint32),
+        ("addr", c_uint8),
+        ("_reserved", c_uint8 * 3),
+    ]
+
+
+class j1939_filter(Structure):
+    _fields_ = [
+        ("name", c_uint64),
+        ("name_mask", c_uint64),
+        ("pgn", c_uint32),
+        ("pgn_mask", c_uint32),
+        ("addr", c_uint8),
+        ("addr_mask", c_uint8),
+    ]
+
+
+class dcan_j1939_info(Structure):
+    _fields_ = [
+        ("timestamp_ns", c_uint64),
+        ("src", dcan_j1939_addr),
+        ("dst_name", c_uint64),
+        ("dst_addr", c_uint8),
+        ("priority", c_uint8),
+        ("notice", c_uint8),
+        ("reason", c_uint8),
+        ("size", c_uint32),
+        ("acked", c_uint32),
+    ]
+
+
 assert ctypes.sizeof(can_frame) == CAN_MTU
 assert ctypes.sizeof(canfd_frame) == CANFD_MTU
 assert ctypes.sizeof(dcan_rx_info) == 24
@@ -160,6 +195,9 @@ assert ctypes.sizeof(dcan_isotp_options) == 44
 assert ctypes.sizeof(dcan_bus_config) == 20
 assert ctypes.sizeof(dcan_interface) == 188
 assert ctypes.sizeof(bcm_msg_head) == 56
+assert ctypes.sizeof(dcan_j1939_addr) == 16
+assert ctypes.sizeof(j1939_filter) == 32
+assert ctypes.sizeof(dcan_j1939_info) == 48
 
 _FUNCTIONS = {
     "dcan_last_error": (c_char_p, []),
@@ -196,6 +234,26 @@ _FUNCTIONS = {
     "dcan_bcm_close": (None, [c_void_p]),
     "dcan_bcm_send": (c_int, [c_void_p, c_void_p, c_size_t]),
     "dcan_bcm_recv": (c_int, [c_void_p, c_void_p, c_size_t, POINTER(c_uint64), c_int]),
+    "dcan_j1939_open_at": (c_void_p, [c_char_p, c_char_p, POINTER(dcan_j1939_addr)]),
+    "dcan_j1939_close": (None, [c_void_p]),
+    "dcan_j1939_bind": (c_int, [c_void_p, POINTER(dcan_j1939_addr)]),
+    "dcan_j1939_connect": (c_int, [c_void_p, POINTER(dcan_j1939_addr)]),
+    "dcan_j1939_send": (c_int, [c_void_p, c_char_p, c_size_t]),
+    "dcan_j1939_sendto": (c_int, [c_void_p, c_char_p, c_size_t, POINTER(dcan_j1939_addr)]),
+    "dcan_j1939_sendto_prio": (
+        c_int,
+        [c_void_p, c_char_p, c_size_t, POINTER(dcan_j1939_addr), c_int],
+    ),
+    "dcan_j1939_recv": (
+        c_int,
+        [c_void_p, c_void_p, c_size_t, POINTER(dcan_j1939_info), c_int],
+    ),
+    "dcan_j1939_set_filters": (c_int, [c_void_p, POINTER(j1939_filter), c_size_t]),
+    "dcan_j1939_set_promisc": (c_int, [c_void_p, c_int]),
+    "dcan_j1939_set_broadcast": (c_int, [c_void_p, c_int]),
+    "dcan_j1939_set_send_prio": (c_int, [c_void_p, c_int]),
+    "dcan_j1939_set_notices": (c_int, [c_void_p, c_int]),
+    "dcan_j1939_fileno": (c_int, [c_void_p]),
 }
 
 _NAME = "libdarwincan.dylib"
