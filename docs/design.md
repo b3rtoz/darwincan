@@ -61,9 +61,16 @@ A client that is faulty, or that never reads what it is sent, must still not be 
 | Transmit jobs, and receive jobs, per broadcast manager | 4,096 each | The request is refused |
 | Frames in one broadcast manager job | 256 | The request is refused |
 | Payload of a message carrying ISO-TP or J1939 data | 128 MiB | The connection is closed |
+| ISO-TP and J1939 data one connection has given the daemon to send | 128 MiB, and always one message | The daemon stops reading from that client until there is room, so its send waits |
+| ISO-TP and J1939 data waiting for one client to read | 128 MiB, and always one message | Further messages for that client are dropped |
+| ISO-TP and J1939 data held for all clients together | 1 GiB (`--memory-limit`), half of it kept for sending | A client that sends waits; a client that already has data waiting loses further messages |
 | Payload of any other message | 64 KiB | The connection is closed |
 | Longest ISO-TP message a channel can be set to accept | 128 MiB | The channel is not opened |
 | Time an answer waits for room in a client's queue, when it comes from a thread shared with other clients | 100 ms | The client is disconnected |
+
+The last three rows count bytes, where the others count messages. A long message is counted when its header arrives, before the daemon reads the rest of it, and until it has been sent or given up; a received message is counted until it has been written to its client. CAN frames are not counted: they are small and their queues are limited by number, so nothing is added to the frame path. A client that reads what it is sent always gets its next message, whatever other clients leave unread.
+
+The daemon takes blocks of a megabyte or more from the system directly and gives them back the moment they are freed (`large_alloc.rs`). The system allocator on macOS keeps freed large blocks for later use, and with it the daemon held several hundred megabytes after a few long messages for as long as it ran.
 
 The daemon raises its own limit on open files at start-up, and a connection that cannot be accepted or served is dropped without affecting the others.
 

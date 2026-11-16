@@ -964,6 +964,17 @@ impl J1939 {
         None
     }
 
+    /// How many bytes of messages `socket` has given to be sent are
+    /// still held: those of its messages that go in several frames and
+    /// are waiting or under way.
+    pub fn queued_bytes(&self, socket: SocketId) -> usize {
+        self.tx
+            .iter()
+            .filter(|s| s.socket == socket)
+            .map(|s| s.data.len())
+            .sum()
+    }
+
     /// The interface cannot send: give up everything that was to go out.
     pub fn link_down(&mut self, now: u64) {
         self.control.clear();

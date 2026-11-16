@@ -178,6 +178,8 @@ A `J1939Socket` is what a `CAN_J1939` socket is on Linux. It sends and receives 
 
 A received `J1939Message` has `data`, `pgn`, `src_addr`, `dst_addr` (`J1939Socket.NO_ADDR` if it was sent to everyone), `priority`, `timestamp`, `src_name`, `dst_name` and `size`.
 
+The daemon holds at most 128 MiB of messages that one socket has given it to send. A program that queues more, for example a whole image as many long messages in a loop, finds `send_to` waiting until earlier messages are out; it does not raise.
+
 A long message to one destination needs the destination to answer, so it can fail after `send_to` has returned. With `notices=True`, `recv` returns a `J1939Notice` when a message the socket sent is out (`NOTICE_TX_DONE`) or was given up (`NOTICE_TX_ABORT`, with `reason` one of the `ABORT_*` values), and when a long message for the socket begins (`NOTICE_RX_RTS`), goes on (`NOTICE_RX_DPO`) or is given up (`NOTICE_RX_ABORT`). Tell the two apart with `isinstance`:
 
 ```python

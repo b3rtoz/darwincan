@@ -36,7 +36,6 @@ The items below are listed roughly in the order they are likely to be done.
 | SLCAN backend | Support for adapters that present themselves as a serial port. |
 | Packaging | A Homebrew formula, and a Python wheel that includes the C library so that `pip install` is the only step. |
 | ISO-TP extended and mixed addressing | Only normal addressing is supported today. |
-| A limit in bytes on what one client can queue | Today the limits count messages, so one program can make the daemon hold hundreds of megabytes. See "Robustness work still to do" below. |
 | Long soak tests | Runs lasting hours, at high bus load, with several nodes on the bus. |
 
 Some smaller pieces were left out of features that otherwise exist:
@@ -65,7 +64,6 @@ A review of the code before the first public release found no memory-safety bug 
 - **Shutdown takes interfaces off the bus one after another within a single two-second limit.** One unresponsive adapter can use up that time and leave the others on the bus.
 - **The Kvaser backend does not confirm that listen-only mode was accepted** before starting a channel. It only requests listen-only on channels that report the capability, so this matters only if the firmware misreports.
 - **The timestamp mapping trusts the adapter's clock.** A single badly wrong timestamp from an adapter can make later timestamps read a few milliseconds early until the mapping corrects itself.
-- **Memory use is bounded by message counts, not bytes.** A local program that deliberately queues many very large ISO-TP or J1939 messages without reading them can make the daemon use a great deal of memory.
 - **The daemon holds its list of interfaces locked while it renames one or reads their state.** A program that renames interfaces in a tight loop can slow down the others.
 
 The daemon trusts every program that can open its socket; see [SECURITY.md](../SECURITY.md).

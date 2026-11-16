@@ -6,6 +6,11 @@ use std::process::{Command, ExitCode};
 use darwincan_core::default_socket_path;
 use darwincand::{launchd, Daemon};
 
+// Long messages go through blocks of many megabytes, which the system
+// allocator would keep after they are freed; see `large_alloc`.
+#[global_allocator]
+static ALLOCATOR: darwincand::large_alloc::LargeAlloc = darwincand::large_alloc::LargeAlloc;
+
 const USAGE: &str = "\
 Usage: darwincand [options]
        darwincand install [--print] [options]
@@ -27,6 +32,11 @@ Options:
   --timing-log <ms> Log whatever holds a frame up for longer than this:
                     an adapter slow to take it, or the daemon's own
                     threads being woken late (for finding timing faults)
+  --memory-limit <MiB>
+                    How much ISO-TP and J1939 message data, waiting to be
+                    sent or to be read, all programs together may make the
+                    daemon hold (default: 1024). A program that sends
+                    more waits; see docs/design.md
   --launchd         Serve the socket launchd listens on for the launch
                     agent (set by 'install'; not for use by hand)
   -h, --help        Show this help
@@ -47,6 +57,7 @@ struct Options {
     hardware: bool,
     names: Option<PathBuf>,
     timing_log: Option<f64>,
+    memory_limit: Option<usize>,
     launchd: bool,
     print: bool,
 }
@@ -60,6 +71,7 @@ fn parse_options(args: &[String], installing: bool) -> Result<Option<Options>, S
         hardware: true,
         names: None,
         timing_log: None,
+        memory_limit: None,
         launchd: false,
         print: false,
     };
@@ -93,6 +105,15 @@ fn parse_options(args: &[String], installing: bool) -> Result<Option<Options>, S
                 o.timing_log = match ms.parse::<f64>() {
                     Ok(ms) if ms > 0.0 && ms.is_finite() => Some(ms),
                     _ => return Err(format!("--timing-log: not a time in milliseconds: {ms}")),
+                };
+            }
+            "--memory-limit" => {
+                let mib = args
+                    .next()
+                    .ok_or("--memory-limit needs a size in mebibytes")?;
+                o.memory_limit = match mib.parse::<usize>() {
+                    Ok(mib) if (1..=1 << 20).contains(&mib) => Some(mib),
+                    _ => return Err(format!("--memory-limit: not a size in mebibytes: {mib}")),
                 };
             }
             "--launchd" if !installing => o.launchd = true,
@@ -148,6 +169,9 @@ fn run(options: Options) -> ExitCode {
     // stop signals to the one that handles them.
     if let Err(e) = daemon.stop_on_signal() {
         eprintln!("darwincand: adapters will stay on the bus if the daemon is killed: {e}");
+    }
+    if let Some(mib) = options.memory_limit {
+        daemon.set_memory_limit(mib << 20);
     }
     if let Some(ms) = options.timing_log {
         if let Err(e) = darwincand::timing::watch(std::time::Duration::from_secs_f64(ms / 1000.0)) {
@@ -285,6 +309,9 @@ fn install(options: &Options) -> Result<(), String> {
     }
     if let Some(ms) = options.timing_log {
         extra.extend(["--timing-log".to_string(), ms.to_string()]);
+    }
+    if let Some(mib) = options.memory_limit {
+        extra.extend(["--memory-limit".to_string(), mib.to_string()]);
     }
     let plist = launchd::agent_plist(&program, &extra, &socket, &log);
     if options.print {

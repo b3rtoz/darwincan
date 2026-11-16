@@ -10,7 +10,7 @@ Within that boundary there is no further access control, by design:
 - **A CAN bus has no authentication of its own.** A program that can transmit can send any frame. If the adapter is connected to a vehicle or a machine, treat every program you run on the Mac as able to command it. Use an adapter's listen-only mode when you only need to observe, and note that not every adapter has one (see [docs/hardware.md](docs/hardware.md)).
 - **A socket in a shared directory is not protected.** If you point `DARWINCAN_SOCKET` or `--socket` at a place such as `/tmp`, another user of the Mac can create a file there first and keep the daemon from starting, or run something else at that path for your programs to connect to. Use such paths only for throwaway tests.
 
-The daemon is written so that a faulty or hostile client cannot crash it or stall the bus for other clients, and so that malformed data from a USB adapter cannot crash it. The limits that back this up (on filters, jobs, message sizes and queue lengths) are described in [docs/design.md](docs/design.md). The gaps that are known and not yet closed are listed under "Robustness work still to do" in [docs/roadmap.md](docs/roadmap.md).
+The daemon is written so that a faulty or hostile client cannot crash it or stall the bus for other clients, and so that malformed data from a USB adapter cannot crash it. The limits that back this up (on filters, jobs, message sizes, queue lengths and the amount of message data held) are described in [docs/design.md](docs/design.md). The gaps that are known and not yet closed are listed under "Robustness work still to do" in [docs/roadmap.md](docs/roadmap.md).
 
 ## Reporting a vulnerability
 

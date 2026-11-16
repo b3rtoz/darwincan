@@ -563,6 +563,24 @@ The same bench and settings as the runs before, with `candump -x can0` and `isot
 
 That ISO-TP message is the first to cross between Linux's ISO-TP and darwinCAN's; nothing else of ISO-TP has been run against Linux.
 
+### The limit on message data, and the daemon's allocator (2026-11-16)
+
+Measured on virtual interfaces with the release build, and then run on the bench against Linux (X6 connector CAN1, the Kvaser's channel 1 in the virtual machine, 250 kbit/s) to see that nothing else had changed.
+
+| Check | Result |
+|---|---|
+| Daemon memory after three J1939 messages of 117,440,505 bytes that nobody received | 7 MB after each, and about 120 MB while one was held. Before the change: 234, 346 and 458 MB, which stayed |
+| A J1939 message of 20 MB delivered on a virtual interface | Intact, in 0.64 s; 7 MB afterwards |
+| 500 ISO-TP messages of 4095 bytes one after another, as a flash sends its blocks | All received, in 1.4 s |
+| ISO-TP, 4000 bytes, receiver asking for STmin 5 ms | Gaps of 5.003 to 5.037 ms, none under |
+| Delivery latency on a virtual interface, six runs before and six after, twice | Medians 84 to 132 µs before and 21 to 92 µs after; 99th percentiles 156 to 217 µs before and 62 to 167 µs after. One run after the change had a single sample of 13 ms; single samples of 1 to 2 ms occurred before the change too |
+| On the bench: 5000 counted frames from the Mac to Linux and 5000 back | All received each way; none repeated or missing among those Linux received |
+| On the bench: 200,000 bytes by J1939 each way | Intact both ways; 16.1 s from the Mac |
+| On the bench: a 4095-byte ISO-TP message from the Mac to Linux's `isotprecv` | Intact |
+| Daemon memory over the bench run | 8 MB at the start, 9 MB at the end |
+
+Not done: the limits themselves on real adapters, which behave no differently there; a message near the 128 MiB limits on a bus, which would take hours; and the classic PCAN-USB and the Kvaser backend, which were not in use.
+
 ## Bugs found on hardware and fixed
 
 | Symptom | Cause | Fixed |

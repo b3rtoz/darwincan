@@ -49,6 +49,7 @@ Identifiers, flags and filters use the SocketCAN encoding. Bit 31 of `can_id` ma
 
 ### Sending
 
+- **Long messages are limited in bytes, not only in number.** The daemon holds at most 128 MiB of ISO-TP and J1939 messages that one connection has given it to send; a program that sends more waits, as on a Linux socket whose buffer is full. At most 128 MiB of received messages wait for a program that does not read them, and further ones are dropped. One message always fits, whatever its length. See [design.md](design.md) for the limits.
 - **A send returns as soon as the daemon has the frame**, like `write` on a Linux socket. It does not wait for the bus.
 - A send fails at once if the interface is down, bus-off or unplugged.
 - A frame that the daemon accepted but the adapter could not put on the bus (because nothing acknowledges and the adapter is full) is reported later, in the receive stream, as a transmit failure.

@@ -351,6 +351,41 @@ fn isotp_transfers_between_clients() {
 }
 
 #[test]
+fn isotp_messages_are_counted_while_the_daemon_holds_them() {
+    let (daemon, path) = start();
+    // Half of 300,000 bytes is for what waits to be read.
+    daemon.set_memory_limit(300_000);
+    let (a, b) = isotp_pair(&path, |p| p.max_rx_len = 200_000);
+    // The peer does not read. What it is sent fills its connection, then
+    // waits in the daemon up to what that may hold, and the rest is
+    // dropped. The sender is not held up by any of it.
+    let long = payload(100_000);
+    for _ in 0..30 {
+        a.send_blocking(&long).unwrap();
+        let (sending, queued) = daemon.memory_held();
+        assert!(sending == 0 && queued <= 150_000, "{sending} {queued}");
+    }
+    assert_eq!(daemon.memory_held().1, 100_000);
+    // When it reads at last, it has some of the thirty, whole.
+    let mut received = 0;
+    b.set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
+    while let Ok(data) = b.recv() {
+        assert_eq!(data, long);
+        received += 1;
+    }
+    assert!((1..30).contains(&received), "{received}");
+    // A send that fails gives back what was counted for it.
+    let lonely = IsoTpSocket::open_at(&path, "vcan0", IsoTpParams::new(0x701, 0x702)).unwrap();
+    assert!(lonely.send_blocking(&payload(80_000)).is_err());
+    let give_up = Instant::now() + Duration::from_secs(5);
+    while daemon.memory_held() != (0, 0) {
+        assert!(Instant::now() < give_up, "{:?}", daemon.memory_held());
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
 fn isotp_over_can_fd() {
     let (_d, path) = start();
     let (a, b) = isotp_pair(&path, |p| {

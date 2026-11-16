@@ -688,3 +688,93 @@ fn a_client_that_does_not_read_its_answers_is_dropped_and_holds_nobody_up() {
         .unwrap();
     assert_eq!(peer.recv().unwrap().data, [0xAA; 20]);
 }
+
+/// A daemon that may hold `limit` bytes of message data.
+fn start_with_limit(limit: usize) -> (Daemon, SockPath) {
+    let (daemon, path) = start();
+    daemon.set_memory_limit(limit);
+    (daemon, path)
+}
+
+/// Wait until the daemon holds no message data any more.
+fn wait_until_nothing_is_held(daemon: &Daemon) {
+    let give_up = Instant::now() + Duration::from_secs(5);
+    while daemon.memory_held() != (0, 0) {
+        assert!(Instant::now() < give_up, "{:?}", daemon.memory_held());
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_send_waits_while_the_daemon_holds_all_it_may() {
+    let (daemon, path) = start_with_limit(1 << 20);
+    let a = open(&path, 0x80);
+    let b = open(&path, 0x81);
+    a.set_notices(true).unwrap();
+    // Nobody answers at 0x55, so this message is held until it is given
+    // up, 1.25 s from now.
+    let begun = Instant::now();
+    a.send_to(&payload(700_000), &J1939Addr::new(0x55, 0xEF00))
+        .unwrap();
+    assert_eq!(daemon.memory_held(), (700_000, 0));
+    // With it, another 500,000 bytes are more than the daemon may hold:
+    // the second send waits for the first to go.
+    b.send_to(&payload(500_000), &J1939Addr::new(0x56, 0xEF00))
+        .unwrap();
+    let waited = begun.elapsed();
+    assert!(waited >= Duration::from_millis(1250), "waited {waited:?}");
+    assert!(waited < Duration::from_secs(4), "waited {waited:?}");
+    match a.recv_event().unwrap() {
+        J1939Event::Notice(n) => assert_eq!(n.kind, J1939NoticeKind::TxAborted),
+        other => panic!("{other:?}"),
+    }
+    // What is short is not held up meanwhile.
+    a.send_to(&[1, 2, 3], &J1939Addr::new(0x55, 0xEF00))
+        .unwrap();
+    // When the sockets have gone, nothing is held.
+    drop((a, b));
+    wait_until_nothing_is_held(&daemon);
+}
+
+#[test]
+fn a_socket_that_does_not_read_loses_messages_and_holds_nobody_up() {
+    // Half of what the daemon may hold is for what waits to be read:
+    // 200,000 bytes here.
+    let (daemon, path) = start_with_limit(400_000);
+    let a = open(&path, 0x80);
+    let idle = open(&path, 0x90);
+    let reader = open(&path, 0x91);
+    a.set_notices(true).unwrap();
+    let sent = |to: u8, marker: u8| {
+        let mut data = payload(90_000);
+        data[0] = marker;
+        a.send_to(&data, &J1939Addr::new(to, 0xEF00)).unwrap();
+        match a.recv_event().unwrap() {
+            J1939Event::Notice(n) => assert_eq!(n.kind, J1939NoticeKind::TxDone),
+            other => panic!("{other:?}"),
+        }
+    };
+    // Thirty messages for the socket that does not read. They fill its
+    // connection, then wait in the daemon up to what that may hold, and
+    // the rest are dropped.
+    for marker in 1..=30 {
+        sent(0x90, marker);
+        let (_, queued) = daemon.memory_held();
+        assert!(queued <= 200_000, "{queued}");
+    }
+    assert_eq!(daemon.memory_held(), (0, 180_000));
+    // The one that reads gets its message all the same.
+    sent(0x91, 99);
+    assert_eq!(reader.recv().unwrap().data[0], 99);
+    // When the idle one reads at last, it has the first of them, in
+    // order, and not all thirty.
+    idle.set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
+    let mut received = 0;
+    while let Ok(m) = idle.recv() {
+        received += 1;
+        assert_eq!(m.data[0], received);
+    }
+    assert!((2..30).contains(&received), "{received}");
+    wait_until_nothing_is_held(&daemon);
+}

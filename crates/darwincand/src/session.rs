@@ -24,6 +24,7 @@ use darwincan_core::{BcmMessage, Filter, Frame, IsoTpParams};
 use darwincan_isotp::{Event, IsoTp};
 
 use crate::bcm::Bcm;
+use crate::budget::{Account, COUNTED_FROM};
 use crate::bus::{Bus, ConfigureError, Sink};
 use crate::clock::now_ns;
 use crate::j1939::NodeInput;
@@ -60,6 +61,29 @@ pub(crate) fn give_answer(out: &SyncSender<Message>, mut msg: Message) -> bool {
                 thread::sleep(Duration::from_micros(200));
             }
         }
+    }
+}
+
+/// Queue an ISO-TP or J1939 message for a client to read, unless the
+/// client has too much waiting already: it is then dropped, as a frame
+/// is for a client that does not keep up. Never waits.
+pub(crate) fn queue_data(out: &SyncSender<Message>, account: &Account, msg: Message) {
+    let bytes = data_len(&msg);
+    if !account.queue(bytes) {
+        return;
+    }
+    if out.try_send(msg).is_err() {
+        account.unqueue(bytes);
+    }
+}
+
+/// The length of the data a message carries to a client, if it is one
+/// that is counted.
+fn data_len(msg: &Message) -> usize {
+    match msg {
+        Message::IsoTpData { data, .. } => data.len(),
+        Message::J1939Data(m) => m.data.len(),
+        _ => 0,
     }
 }
 
@@ -210,7 +234,8 @@ enum IsoInput {
     Sent(Frame, u64),
     /// A frame of ours will not be sent.
     Dropped,
-    Send(Vec<u8>),
+    /// A message to send, and what was counted for it when it was read.
+    Send(Vec<u8>, usize),
     Close,
 }
 
@@ -327,11 +352,22 @@ pub(crate) fn run(shared: Arc<Shared>, stream: UnixStream) {
         return;
     };
     let (out, out_rx) = mpsc::sync_channel::<Message>(OUT_QUEUE);
-    let _ = thread::Builder::new()
-        .name("darwincand-writer".into())
-        .spawn(move || writer_loop(write_half, out_rx));
+    let account = Account::new(&shared.budget);
+    let _ = {
+        let account = account.clone();
+        thread::Builder::new()
+            .name("darwincand-writer".into())
+            .spawn(move || writer_loop(write_half, out_rx, account))
+    };
 
     let mut reader = MessageReader::new(read_half);
+    // A long message is counted before it is read, and waited with while
+    // there is no room for it: the client's send then waits, as it does
+    // on a socket whose buffer is full.
+    {
+        let account = account.clone();
+        reader.set_gate(COUNTED_FROM, move |bytes| account.reserve(bytes));
+    }
     let mut mode = Mode::Control;
     let opened = Cell::new(true);
 
@@ -350,6 +386,10 @@ pub(crate) fn run(shared: Arc<Shared>, stream: UnixStream) {
                 break;
             }
         };
+        // What was counted for this message when it was read. Whoever
+        // takes the message takes this too; if nobody does, it is given
+        // back below.
+        let mut reserved = reader.last_gated();
         let reply = match (&mode, msg) {
             (Mode::Control, Message::ListIfaces) => Some(Message::Ifaces(
                 shared
@@ -491,9 +531,10 @@ pub(crate) fn run(shared: Arc<Shared>, stream: UnixStream) {
                         let spawned = {
                             let bus = bus.clone();
                             let out = out.clone();
+                            let account = account.clone();
                             thread::Builder::new()
                                 .name("darwincand-isotp".into())
-                                .spawn(move || isotp_loop(bus, id, params, input_rx, out))
+                                .spawn(move || isotp_loop(bus, id, params, input_rx, out, account))
                         };
                         if spawned.is_err() {
                             Some(error(ErrorCode::Other, "could not start ISO-TP thread"))
@@ -646,9 +687,14 @@ pub(crate) fn run(shared: Arc<Shared>, stream: UnixStream) {
                         let id = shared.next_id();
                         // The stack answers, once the socket is open.
                         let node = stream.try_clone().ok().and_then(|client| {
-                            shared
-                                .j1939
-                                .open(&shared, &bus, id, addr, out.clone(), client)
+                            let open = NodeInput::Open {
+                                id,
+                                addr,
+                                out: out.clone(),
+                                client,
+                                account: account.clone(),
+                            };
+                            shared.j1939.open(&shared, &bus, open)
                         });
                         match node {
                             Some(node) => {
@@ -670,7 +716,12 @@ pub(crate) fn run(shared: Arc<Shared>, stream: UnixStream) {
                 | Message::SetOption { .. }
                 | Message::Sync),
             ) => {
-                if node.send(NodeInput::Request { id: *id, msg }).is_err() {
+                let request = NodeInput::Request {
+                    id: *id,
+                    msg,
+                    reserved: std::mem::take(&mut reserved),
+                };
+                if node.send(request).is_err() {
                     break;
                 }
                 None
@@ -679,7 +730,7 @@ pub(crate) fn run(shared: Arc<Shared>, stream: UnixStream) {
             (_, Message::Sync) => Some(Message::Ok),
 
             (Mode::IsoTp { input, .. }, Message::IsoTpSend(data)) => {
-                let _ = input.send(IsoInput::Send(data));
+                let _ = input.send(IsoInput::Send(data, std::mem::take(&mut reserved)));
                 None
             }
 
@@ -688,6 +739,7 @@ pub(crate) fn run(shared: Arc<Shared>, stream: UnixStream) {
                 "request not valid in this state",
             )),
         };
+        account.release(reserved);
         if let Some(reply) = reply {
             if out.send(reply).is_err() {
                 break;
@@ -742,7 +794,7 @@ fn no_such_interface(ifname: &str) -> Message {
 
 /// Drains the client's queue to its socket, flushing whenever the queue
 /// runs empty so a lone frame is never held back.
-fn writer_loop(stream: UnixStream, rx: Receiver<Message>) {
+fn writer_loop(stream: UnixStream, rx: Receiver<Message>, account: Arc<Account>) {
     make_current_thread_realtime();
     let mut w = BufWriter::with_capacity(64 * 1024, stream);
     let mut buf = Vec::with_capacity(256);
@@ -751,7 +803,17 @@ fn writer_loop(stream: UnixStream, rx: Receiver<Message>) {
         while let Some(msg) = next {
             buf.clear();
             msg.encode(&mut buf);
-            if w.write_all(&buf).is_err() {
+            let counted = data_len(&msg);
+            drop(msg);
+            let written = w.write_all(&buf);
+            if counted > 0 {
+                account.unqueue(counted);
+                // The room a long message took is not kept for the next.
+                if buf.capacity() > COUNTED_FROM {
+                    buf = Vec::with_capacity(256);
+                }
+            }
+            if written.is_err() {
                 return;
             }
             next = rx.try_recv().ok();
@@ -793,10 +855,13 @@ fn isotp_loop(
     params: IsoTpParams,
     input: Receiver<IsoInput>,
     out: SyncSender<Message>,
+    account: Arc<Account>,
 ) {
     make_current_thread_realtime();
     let confirms = bus.confirms_transmission();
     let mut tp = IsoTp::new(params);
+    // What is counted for the message being sent.
+    let mut sending = 0usize;
     loop {
         let event = match tp.next_deadline() {
             None => match input.recv() {
@@ -820,9 +885,14 @@ fn isotp_loop(
             // once in 35,000 frames, so it is not done.
             Some(IsoInput::Sent(frame, at)) => tp.frame_transmitted(&frame, at),
             Some(IsoInput::Dropped) => tp.abort_send(),
-            Some(IsoInput::Send(data)) => {
-                if let Err(reason) = tp.send(data, now_ns()) {
-                    let _ = give_answer(&out, Message::IsoTpFailed { tx: true, reason });
+            Some(IsoInput::Send(data, reserved)) => {
+                match tp.send(data, now_ns()) {
+                    // Counted until the message is out or given up.
+                    Ok(()) => sending = reserved,
+                    Err(reason) => {
+                        account.release(reserved);
+                        let _ = give_answer(&out, Message::IsoTpFailed { tx: true, reason });
+                    }
                 }
             }
             Some(IsoInput::Close) => return,
@@ -862,7 +932,10 @@ fn isotp_loop(
                 msg,
                 Message::IsoTpTxDone | Message::IsoTpFailed { tx: true, .. }
             ) {
+                account.release(std::mem::take(&mut sending));
                 let _ = give_answer(&out, msg);
+            } else if matches!(msg, Message::IsoTpData { .. }) {
+                queue_data(&out, &account, msg);
             } else {
                 let _ = out.try_send(msg);
             }

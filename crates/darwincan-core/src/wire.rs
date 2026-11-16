@@ -973,6 +973,17 @@ pub struct MessageReader<R> {
     inner: R,
     buf: Vec<u8>,
     pos: usize,
+    gate: Option<Gate>,
+    /// The message being read has been through the gate.
+    announced: bool,
+    /// The payload length the gate was called with for the message
+    /// returned last; zero if it was not called.
+    gated: usize,
+}
+
+struct Gate {
+    from: usize,
+    call: Box<dyn FnMut(usize) + Send>,
 }
 
 impl<R: Read> MessageReader<R> {
@@ -981,7 +992,27 @@ impl<R: Read> MessageReader<R> {
             inner,
             buf: Vec::with_capacity(4096),
             pos: 0,
+            gate: None,
+            announced: false,
+            gated: 0,
         }
+    }
+
+    /// Have `gate` called with the length of each payload of at least
+    /// `from` bytes when its header has come and before the payload is
+    /// read: it may wait, which holds the sender up, until there is room
+    /// for the message.
+    pub fn set_gate(&mut self, from: usize, gate: impl FnMut(usize) + Send + 'static) {
+        self.gate = Some(Gate {
+            from,
+            call: Box::new(gate),
+        });
+    }
+
+    /// The payload length the gate was called with for the message that
+    /// [`read`](Self::read) returned last, or zero if it was not called.
+    pub fn last_gated(&self) -> usize {
+        self.gated
     }
 
     pub fn get_ref(&self) -> &R {
@@ -1060,11 +1091,22 @@ impl<R: Read> MessageReader<R> {
         if len > max_payload(ty) {
             return Err(bad("message payload too large"));
         }
-        if avail.len() < HEADER_LEN + len {
+        let complete = avail.len() >= HEADER_LEN + len;
+        if !self.announced {
+            self.announced = true;
+            self.gated = 0;
+            if let Some(gate) = self.gate.as_mut().filter(|gate| len >= gate.from) {
+                (gate.call)(len);
+                self.gated = len;
+            }
+        }
+        if !complete {
             return Ok(None);
         }
+        let avail = &self.buf[self.pos..];
         let msg = Message::decode(ty, &avail[HEADER_LEN..HEADER_LEN + len])?;
         self.pos += HEADER_LEN + len;
+        self.announced = false;
         Ok(Some(msg))
     }
 }
@@ -1355,5 +1397,51 @@ mod tests {
             reader.fill().unwrap_err().kind(),
             io::ErrorKind::UnexpectedEof
         );
+    }
+
+    #[test]
+    fn a_long_payload_is_announced_before_it_is_read() {
+        use std::sync::{Arc, Mutex};
+
+        /// Gives out what it holds a few bytes at a time, and says how
+        /// much had been taken when it is asked.
+        struct Slow(Vec<u8>, usize, Arc<Mutex<usize>>);
+        impl Read for Slow {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let n = buf.len().min(100).min(self.0.len() - self.1);
+                buf[..n].copy_from_slice(&self.0[self.1..self.1 + n]);
+                self.1 += n;
+                *self.2.lock().unwrap() = self.1;
+                Ok(n)
+            }
+        }
+
+        let long = Message::IsoTpSend(vec![7; 5000]);
+        let short = Message::IsoTpSend(vec![8; 10]);
+        let mut bytes = Vec::new();
+        for msg in [&short, &long, &short] {
+            let mut one = Vec::new();
+            msg.write_to(&mut one).unwrap();
+            bytes.extend(one);
+        }
+        let taken = Arc::new(Mutex::new(0));
+        let mut reader = MessageReader::new(Slow(bytes, 0, taken.clone()));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = calls.clone();
+        reader.set_gate(1000, move |len| {
+            seen.lock().unwrap().push((len, *taken.lock().unwrap()))
+        });
+        assert_eq!(reader.read().unwrap(), short);
+        assert_eq!(reader.last_gated(), 0);
+        assert_eq!(reader.read().unwrap(), long);
+        assert_eq!(reader.last_gated(), 5000);
+        assert_eq!(reader.read().unwrap(), short);
+        assert_eq!(reader.last_gated(), 0);
+        // Called once, for the long one, when little more than its header
+        // had been taken from the stream.
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, 5000);
+        assert!(calls[0].1 < 200, "{calls:?}");
     }
 }

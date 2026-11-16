@@ -16,6 +16,7 @@ use darwincan_core::wire::{ErrorCode, LinkState, Message, SockOpt};
 use darwincan_core::{Frame, J1939Addr};
 use darwincan_j1939::{Origin, Output, SendError, J1939};
 
+use crate::budget::Account;
 use crate::bus::{Bus, Sink};
 use crate::clock::now_ns;
 use crate::priority::make_current_thread_realtime;
@@ -42,11 +43,15 @@ pub(crate) enum NodeInput {
         /// The client's connection, to end it with if the client does not
         /// take its answers.
         client: UnixStream,
+        /// What the daemon holds for the connection.
+        account: Arc<Account>,
     },
     /// Something a socket asks. Answered with `Ok` or `Refused`.
+    /// `reserved` bytes were counted for it when it was read.
     Request {
         id: u64,
         msg: Message,
+        reserved: usize,
     },
     Close {
         id: u64,
@@ -100,27 +105,19 @@ pub(crate) struct Nodes {
 }
 
 impl Nodes {
-    /// Open socket `id` on `bus`, starting the interface's stack if this
-    /// is its first socket. Returns where the socket's requests go.
+    /// Open a socket on `bus` with `open`, which is a
+    /// [`NodeInput::Open`], starting the interface's stack if this is its
+    /// first socket. Returns where the socket's requests go.
     pub(crate) fn open(
         &self,
         shared: &Arc<Shared>,
         bus: &Arc<Bus>,
-        id: u64,
-        addr: J1939Addr,
-        out: SyncSender<Message>,
-        client: UnixStream,
+        mut open: NodeInput,
     ) -> Option<Sender<NodeInput>> {
         // Held until the socket is with a stack: a stack that finds
         // itself without sockets looks for one on its way under this
         // lock before it ends.
         let mut running = self.running.lock().unwrap();
-        let mut open = NodeInput::Open {
-            id,
-            addr,
-            out,
-            client,
-        };
         if let Some(node) = running.get(&bus.index) {
             match node.send(open) {
                 Ok(()) => return Some(node.clone()),
@@ -225,6 +222,9 @@ fn node_loop(shared: Arc<Shared>, bus: Arc<Bus>, node_id: u64, input: Receiver<N
     let mut stack = J1939::new();
     let mut outs: HashMap<u64, SyncSender<Message>> = HashMap::new();
     let mut clients: HashMap<u64, UnixStream> = HashMap::new();
+    // What each socket's connection is charged with for the messages the
+    // stack holds for it.
+    let mut accounts: HashMap<u64, (Arc<Account>, usize)> = HashMap::new();
     // The frames the adapter has and has not reported sent, in the order
     // they were handed over: each with the socket whose message it
     // belongs to and how long to wait for the report.
@@ -266,11 +266,28 @@ fn node_loop(shared: Arc<Shared>, bus: Arc<Bus>, node_id: u64, input: Receiver<N
             if let Some(out) = outs.get(&id) {
                 // A socket that does not read loses messages; nothing
                 // here waits for it.
-                let _ = out.try_send(match output {
-                    Output::Message(m) => Message::J1939Data(m),
-                    Output::Notice(n) => Message::J1939Notice(n),
-                });
+                match output {
+                    Output::Message(m) => {
+                        if let Some((account, _)) = accounts.get(&id) {
+                            session::queue_data(out, account, Message::J1939Data(m));
+                        }
+                    }
+                    Output::Notice(n) => {
+                        let _ = out.try_send(Message::J1939Notice(n));
+                    }
+                }
             }
+        }
+        // What the stack holds for each socket may have changed: a
+        // message taken, finished or given up.
+        for (id, (account, counted)) in accounts.iter_mut() {
+            let held = stack.queued_bytes(*id);
+            if held > *counted {
+                account.add_sending(held - *counted);
+            } else {
+                account.release(*counted - held);
+            }
+            *counted = held;
         }
         let event = match ahead.take() {
             Some(event) => Some(event),
@@ -317,7 +334,9 @@ fn node_loop(shared: Arc<Shared>, bus: Arc<Bus>, node_id: u64, input: Receiver<N
                 addr,
                 out,
                 client,
+                account,
             }) => {
+                accounts.insert(id, (account, 0));
                 // The session has checked the address.
                 let answer = match stack.open(id, addr) {
                     Ok(()) => Message::Ok,
@@ -337,8 +356,19 @@ fn node_loop(shared: Arc<Shared>, bus: Arc<Bus>, node_id: u64, input: Receiver<N
                     session::hang_up(&client);
                 }
             }
-            Some(NodeInput::Request { id, msg }) => {
+            Some(NodeInput::Request { id, msg, reserved }) => {
                 let answer = request(&mut stack, &bus, id, msg);
+                // The message is the stack's now, or was refused: either
+                // way what was counted for it on the way here goes, and
+                // what the stack holds is counted in its place.
+                if let Some((account, counted)) = accounts.get_mut(&id) {
+                    let held = stack.queued_bytes(id);
+                    if held > *counted {
+                        account.add_sending(held - *counted);
+                        *counted = held;
+                    }
+                    account.release(reserved);
+                }
                 let taken = outs.get(&id).map(|out| session::give_answer(out, answer));
                 if taken == Some(false) {
                     // It is not reading what it asks for. Its session
@@ -353,6 +383,9 @@ fn node_loop(shared: Arc<Shared>, bus: Arc<Bus>, node_id: u64, input: Receiver<N
                 stack.close(id, now);
                 outs.remove(&id);
                 clients.remove(&id);
+                if let Some((account, counted)) = accounts.remove(&id) {
+                    account.release(counted);
+                }
                 ending = stack.is_empty();
             }
             Some(NodeInput::Removed) => {

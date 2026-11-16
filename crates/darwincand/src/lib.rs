@@ -17,15 +17,19 @@ pub mod backends;
 mod bcm;
 pub mod bittiming;
 mod block_on;
+mod budget;
 mod bus;
 mod clock;
 mod j1939;
+pub mod large_alloc;
 pub mod launchd;
 mod names;
 mod priority;
 mod session;
 mod signal;
 pub mod timing;
+
+pub use budget::DEFAULT_LIMIT as DEFAULT_MEMORY_LIMIT;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -157,6 +161,8 @@ pub(crate) struct Shared {
     names: Mutex<names::Names>,
     /// The J1939 stacks, one for each interface with a J1939 socket.
     j1939: j1939::Nodes,
+    /// How much message data is held for clients.
+    budget: Arc<budget::Budget>,
 }
 
 /// Why an interface could not be renamed.
@@ -306,8 +312,22 @@ impl Daemon {
                 everywhere: RwLock::new(Vec::new()),
                 names: Mutex::new(names::Names::default()),
                 j1939: j1939::Nodes::default(),
+                budget: budget::Budget::new(),
             }),
         }
+    }
+
+    /// Set how many bytes of message data (ISO-TP and J1939 messages
+    /// waiting to be sent or to be read) all clients together may make
+    /// the daemon hold: [`DEFAULT_MEMORY_LIMIT`] unless set.
+    pub fn set_memory_limit(&self, bytes: usize) {
+        self.shared.budget.set_limit(bytes);
+    }
+
+    /// How many bytes of message data the daemon holds now: waiting to be
+    /// sent, and queued for clients to read.
+    pub fn memory_held(&self) -> (usize, usize) {
+        self.shared.budget.held()
     }
 
     /// Create a virtual bus: frames sent by one client reach the others,

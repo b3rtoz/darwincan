@@ -29,6 +29,7 @@ Run `darwincand install` again if the `darwincand` executable moves to a differe
 | `--no-hardware` | Do not look for USB adapters |
 | `--names <file>` | The file in which the names of hardware interfaces are kept |
 | `--timing-log <ms>` | Log anything that holds a frame up for longer than this, to help find timing faults |
+| `--memory-limit <MiB>` | How much ISO-TP and J1939 message data, waiting to be sent or to be read, all programs together may make the daemon hold. The default is 1024. A program that sends more waits |
 
 The daemon and the tools run under your own user account, without `sudo`. The daemon and everything that talks to it must come from the same build: they check each other's protocol version and report it when the versions differ.
 
