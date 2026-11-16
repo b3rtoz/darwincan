@@ -202,10 +202,12 @@ let message = engine.recv()?;   // message.src, message.data, message.priority
 `J1939Socket` is the equivalent of a `CAN_J1939` socket on Linux. It is bound to an address or to a NAME, can be connected to a peer, and has filters, promiscuous mode and priorities. Messages can be of any length: a message of up to 8 bytes goes in one frame, a longer one of up to 1785 bytes goes as a broadcast (BAM) or by RTS/CTS to one destination, and the extended transport protocol carries anything longer than that.
 
 - **NAMEs.** The daemon follows the address claims on the bus, so a socket that is bound to a NAME, or sends to one, uses the address that the NAME holds. An address counts as held from 250 ms after the NAME claimed it. Claiming and defending an address is the program's job, as on Linux.
-- **Notices** (`set_notices`) report what happened to a long message: that it was sent, that it was given up and why, or that a long message is arriving. They take the place of the socket's error queue on Linux.
+- **Notices** (`set_notices`) report what happened to a long message: that it was sent, that it was given up and why, that a long message is arriving, or that the sender of a message of more than 1785 bytes has begun another block of it. They take the place of the socket's error queue on Linux.
+- **Priority.** `set_send_priority` sets the priority of everything the socket sends; `send_with_priority` and `send_to_with_priority` give one message a priority of its own.
+- **A packet that goes missing** in a message of up to 1785 bytes to one destination is asked for again, at most twice for one message; after that the message is given up. A broadcast with a packet missing is not delivered, because a broadcast cannot be asked for again, and a message of more than 1785 bytes with a packet missing is given up.
 - A send is refused at once if the interface is down, if a NAME has no address, if a broadcast was not allowed, or if the message is too long.
 
-J1939 has so far been tested only against itself, not against another implementation.
+J1939 has been tested against itself and, on one bus, against Linux's J1939 stack. It has not been tested against a real J1939 device.
 
 ### Interfaces
 

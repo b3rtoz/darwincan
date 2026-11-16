@@ -70,6 +70,11 @@ const MAX_BLOCK: u32 = 255;
 /// How much may wait to be sent before a send is refused.
 const MAX_QUEUED_FRAMES: usize = 1024;
 const MAX_SESSIONS: usize = 256;
+/// How often the receiver of one message asks for packets again before it
+/// gives the message up with [`abort::RETRANSMIT_LIMIT`]. SAE J1939-21
+/// (5.10.3.2 and 5.12.3) recommends no more than two such requests and
+/// has the connection aborted with reason 5 after them.
+pub const MAX_RETRANSMIT_REQUESTS: u8 = 2;
 
 /// Where a frame passed to [`J1939::on_frame`] came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +165,16 @@ enum Kind {
     Etp,
 }
 
+/// Which end of a connection a node is: the abort message says which of
+/// the two its sender was (SAE J1939-21, figure 14).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    /// It sent the request to send.
+    Originator = 0,
+    /// It sent the clear-to-send.
+    Responder = 1,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TxState {
     /// Behind another message to the same destination.
@@ -188,7 +203,23 @@ struct TxSession {
     /// Extended protocol: the packet number the sequence numbers count
     /// from.
     offset: u32,
+    /// The first packet of the block asked for last. The receiver may ask
+    /// again for packets from there on, not for earlier ones.
+    block: u32,
     deadline: u64,
+}
+
+impl TxSession {
+    /// How many bytes the receiver has acknowledged: all of them once the
+    /// message is `done`, otherwise what came before the block it asked
+    /// for last.
+    fn acked(&self, done: bool) -> u32 {
+        if done {
+            self.data.len() as u32
+        } else {
+            (((self.block - 1) * 7) as usize).min(self.data.len()) as u32
+        }
+    }
 }
 
 struct RxSession {
@@ -208,6 +239,14 @@ struct RxSession {
     awaiting_offset: bool,
     /// The most packets the sender wants to be asked for at once.
     max_block: u32,
+    /// A packet of the block being sent went missing: what follows it in
+    /// the block is not kept, and at the block's end the packets are asked
+    /// for again from the missing one.
+    gap: bool,
+    /// A clear-to-send is out and nothing has come of it yet.
+    granted: bool,
+    /// How often packets have been asked for again.
+    retries: u8,
     deadline: u64,
     /// The local socket whose message this is, which is not given it.
     exclude: Option<SocketId>,
@@ -389,7 +428,7 @@ impl J1939 {
             if self.tx[i].socket == id {
                 let s = self.tx.remove(i);
                 if s.kind != Kind::Bam && s.state != TxState::Queued {
-                    self.push_abort(s.kind, s.sa, s.da, s.pgn, abort::OTHER);
+                    self.push_abort(s.kind, Role::Originator, s.sa, s.da, s.pgn, abort::OTHER);
                 }
             } else {
                 i += 1;
@@ -560,6 +599,7 @@ impl J1939 {
                 NO_NAME
             },
             size: size as u32,
+            acked: 0,
             reason,
         }
     }
@@ -666,6 +706,7 @@ impl J1939 {
             next: 1,
             last: 0,
             offset: 0,
+            block: 1,
             deadline: 0,
         });
         self.start_queued(now);
@@ -738,14 +779,16 @@ impl J1939 {
         }
     }
 
-    fn push_abort(&mut self, kind: Kind, from: u8, to: u8, pgn: u32, reason: u8) {
+    fn push_abort(&mut self, kind: Kind, role: Role, from: u8, to: u8, pgn: u32, reason: u8) {
         let pgn = pgn_bytes(pgn);
-        let cm = if kind == Kind::Etp {
-            PGN_ETP_CM
+        // The transport protocol's abort says in the low two bits of its
+        // third byte which end sent it; the extended protocol's does not.
+        let (cm, who) = if kind == Kind::Etp {
+            (PGN_ETP_CM, 0xFF)
         } else {
-            PGN_TP_CM
+            (PGN_TP_CM, 0xFC | role as u8)
         };
-        let data = [CM_ABORT, reason, 0xFF, 0xFF, 0xFF, pgn[0], pgn[1], pgn[2]];
+        let data = [CM_ABORT, reason, who, 0xFF, 0xFF, pgn[0], pgn[1], pgn[2]];
         self.control
             .push_back((frame(TP_PRIORITY, cm, to, from, &data), None));
     }
@@ -753,7 +796,8 @@ impl J1939 {
     /// End a sending session and tell its socket.
     fn finish_tx(&mut self, i: usize, kind: J1939NoticeKind, reason: u8, now: u64) {
         let s = self.tx.remove(i);
-        let notice = self.make_notice(kind, s.sa, s.da, s.pgn, s.data.len(), reason, now);
+        let mut notice = self.make_notice(kind, s.sa, s.da, s.pgn, s.data.len(), reason, now);
+        notice.acked = s.acked(kind == J1939NoticeKind::TxDone);
         self.notice_tx(s.socket, notice);
         self.start_queued(now);
     }
@@ -810,7 +854,7 @@ impl J1939 {
         self.control.clear();
         while !self.tx.is_empty() {
             let s = self.tx.remove(0);
-            let notice = self.make_notice(
+            let mut notice = self.make_notice(
                 J1939NoticeKind::TxAborted,
                 s.sa,
                 s.da,
@@ -819,6 +863,7 @@ impl J1939 {
                 abort::OTHER,
                 now,
             );
+            notice.acked = s.acked(false);
             self.notice_tx(s.socket, notice);
         }
     }
@@ -845,9 +890,9 @@ impl J1939 {
     fn fail_rx(&mut self, i: usize, reason: u8, now: u64) {
         let s = self.rx.remove(i);
         if s.kind != Kind::Bam {
-            self.push_abort(s.kind, s.da, s.sa, s.pgn, reason);
+            self.push_abort(s.kind, Role::Responder, s.da, s.sa, s.pgn, reason);
         }
-        let notice = self.make_notice(
+        let mut notice = self.make_notice(
             J1939NoticeKind::RxAborted,
             s.sa,
             s.da,
@@ -856,6 +901,7 @@ impl J1939 {
             reason,
             now,
         );
+        notice.acked = s.data.len() as u32;
         self.notice_rx(notice, s.exclude);
     }
 
@@ -864,6 +910,8 @@ impl J1939 {
         let s = &mut self.rx[i];
         let n = (s.packets - s.next + 1).min(s.max_block);
         s.last = s.next + n - 1;
+        s.gap = false;
+        s.granted = true;
         s.deadline = now + T2_NS;
         let pgn = pgn_bytes(s.pgn);
         let (cm, data) = if s.kind == Kind::Etp {
@@ -895,6 +943,22 @@ impl J1939 {
             .push_back((frame(TP_PRIORITY, cm, to, from, &data), None));
     }
 
+    /// Packets of a connection went missing: ask for them again from the
+    /// first one that is missing, unless that has been done too often.
+    /// The sender takes a clear-to-send only once it has sent the block it
+    /// was asked for, so this is called at the end of a block or when the
+    /// data stops (SAE J1939-21, 5.10.3.2; AUTOSAR's specification of a
+    /// J1939 transport layer says the same in SWS_J1939Tp_00222 and
+    /// 00232).
+    fn request_again(&mut self, i: usize, now: u64) {
+        if self.rx[i].retries >= MAX_RETRANSMIT_REQUESTS {
+            self.fail_rx(i, abort::RETRANSMIT_LIMIT, now);
+            return;
+        }
+        self.rx[i].retries += 1;
+        self.grant(i, now);
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn begin_rx(
         &mut self,
@@ -921,6 +985,9 @@ impl J1939 {
             offset: 0,
             awaiting_offset: false,
             max_block: max_block.clamp(1, MAX_BLOCK),
+            gap: false,
+            granted: false,
+            retries: 0,
             deadline: now + T1_NS,
             exclude,
         });
@@ -948,7 +1015,7 @@ impl J1939 {
         }
         if let Some(i) = self.find_rx(h.sa, h.da, kind) {
             if self.rx[i].pgn != pgn {
-                self.push_abort(kind, h.da, h.sa, pgn, abort::BUSY);
+                self.push_abort(kind, Role::Responder, h.da, h.sa, pgn, abort::BUSY);
                 return;
             }
             // The sender starts over.
@@ -959,20 +1026,32 @@ impl J1939 {
             _ => size > 8 && size <= MAX_TP_SIZE,
         };
         if !fits {
-            self.push_abort(kind, h.da, h.sa, pgn, abort::TOO_BIG);
+            self.push_abort(kind, Role::Responder, h.da, h.sa, pgn, abort::TOO_BIG);
             return;
         }
         self.begin_rx(h, kind, pgn, size, max_block, exclude, now);
+    }
+
+    /// Give up a message being sent, and tell the receiver and the socket.
+    fn abort_tx(&mut self, i: usize, reason: u8, now: u64) {
+        let s = &self.tx[i];
+        let (kind, sa, da, pgn) = (s.kind, s.sa, s.da, s.pgn);
+        self.push_abort(kind, Role::Originator, sa, da, pgn, reason);
+        self.finish_tx(i, J1939NoticeKind::TxAborted, reason, now);
     }
 
     /// A clear-to-send for a message being sent: `count` packets from
     /// number `first`.
     fn on_cts(&mut self, i: usize, count: u32, first: u32, now: u64) {
         let s = &mut self.tx[i];
+        let tp = s.kind == Kind::Tp;
         if s.state != TxState::Waiting {
-            // While data is going out. The standard would have the
-            // session given up; packets already on their way make this
-            // too easy to hit, so it is passed over.
+            // While data is going out. The transport protocol has the
+            // session given up (SAE J1939-21, 5.10.3.2); for the extended
+            // protocol, whose standard was not at hand, it is passed over.
+            if tp {
+                self.abort_tx(i, abort::CTS_WHILE_SENDING, now);
+            }
             return;
         }
         if count == 0 {
@@ -980,13 +1059,20 @@ impl J1939 {
             s.deadline = now + T4_NS;
             return;
         }
-        if first == 0 || first > s.packets {
-            let (kind, sa, da, pgn) = (s.kind, s.sa, s.da, s.pgn);
-            self.push_abort(kind, sa, da, pgn, abort::OTHER);
-            self.finish_tx(i, J1939NoticeKind::TxAborted, abort::OTHER, now);
+        // The receiver asks for what follows what has been sent or, to
+        // have packets again, from somewhere in the block asked for last
+        // (SAE J1939-21, 5.10.3.2: a clear-to-send confirms every packet
+        // before the one it names, and packets can be had again within
+        // the last set cleared to send). Not for packets beyond those,
+        // and not for packets before that block (AUTOSAR
+        // SWS_J1939Tp_00223; SAE J1939-82 tests for the same).
+        let outside = tp && (first > s.next || first < s.block);
+        if first == 0 || first > s.packets || outside {
+            self.abort_tx(i, abort::OTHER, now);
             return;
         }
         let count = count.min(s.packets - first + 1).min(MAX_BLOCK);
+        s.block = first;
         s.next = first;
         s.last = first + count - 1;
         s.state = TxState::Sending;
@@ -1051,7 +1137,11 @@ impl J1939 {
             }
             (false, CM_EOMA) | (true, ETP_EOMA) => {
                 if let Some(i) = self.find_tx(h.da, h.sa, etp) {
-                    if self.tx[i].pgn == pgn {
+                    let s = &self.tx[i];
+                    // Before the last packet has gone it is passed over
+                    // (SAE J1939-21, 5.10.3.3).
+                    let early = !etp && (s.state != TxState::Waiting || s.next <= s.packets);
+                    if s.pgn == pgn && !early {
                         self.finish_tx(i, J1939NoticeKind::TxDone, 0, now);
                     }
                 }
@@ -1072,21 +1162,37 @@ impl J1939 {
                     return;
                 }
                 s.awaiting_offset = false;
+                s.granted = false;
                 s.offset = offset;
                 s.last = s.next + count - 1;
                 s.deadline = now + T1_NS;
+                let (sa, da, pgn, size, exclude) = (s.sa, s.da, s.pgn, s.size, s.exclude);
+                let have = s.data.len() as u32;
+                let mut notice =
+                    self.make_notice(J1939NoticeKind::RxOffset, sa, da, pgn, size, 0, now);
+                notice.acked = have;
+                self.notice_rx(notice, exclude);
             }
             (_, CM_ABORT) => {
                 let kind = if etp { Kind::Etp } else { Kind::Tp };
-                if let Some(i) = self.find_tx(h.da, h.sa, etp) {
+                // Which of the two sessions there can be between two
+                // nodes it ends: the one its sender is the receiver of,
+                // the one it is the sender of, or, said by an older
+                // implementation that does not tell, both.
+                let (from_originator, from_responder) = match (etp, d[2] & 3) {
+                    (false, 0) => (true, false),
+                    (false, 1) => (false, true),
+                    _ => (true, true),
+                };
+                if let Some(i) = self.find_tx(h.da, h.sa, etp).filter(|_| from_responder) {
                     if self.tx[i].pgn == pgn {
                         self.finish_tx(i, J1939NoticeKind::TxAborted, d[1], now);
                     }
                 }
-                if let Some(i) = self.find_rx(h.sa, h.da, kind) {
+                if let Some(i) = self.find_rx(h.sa, h.da, kind).filter(|_| from_originator) {
                     if self.rx[i].pgn == pgn {
                         let s = self.rx.remove(i);
-                        let notice = self.make_notice(
+                        let mut notice = self.make_notice(
                             J1939NoticeKind::RxAborted,
                             s.sa,
                             s.da,
@@ -1095,6 +1201,7 @@ impl J1939 {
                             d[1],
                             now,
                         );
+                        notice.acked = s.data.len() as u32;
                         self.notice_rx(notice, s.exclude);
                     }
                 }
@@ -1120,15 +1227,33 @@ impl J1939 {
             self.fail_rx(i, abort::UNEXPECTED_DATA, now);
             return;
         }
-        if packet != s.next || packet > s.last {
-            let reason = if packet < s.next {
-                abort::DUPLICATE_SEQUENCE
-            } else {
-                abort::BAD_SEQUENCE
-            };
-            self.fail_rx(i, reason, now);
+        if packet > s.last {
+            self.fail_rx(i, abort::BAD_SEQUENCE, now);
             return;
         }
+        if !s.gap && packet < s.next {
+            self.fail_rx(i, abort::DUPLICATE_SEQUENCE, now);
+            return;
+        }
+        if s.gap || packet != s.next {
+            // A packet is missing. A broadcast cannot be repaired; a
+            // connection is, by asking again once the sender has sent the
+            // rest of the block, which is not kept (SAE J1939-21,
+            // 5.10.3.2). The extended protocol's standard was not at
+            // hand, so its sessions are given up as they were before.
+            if s.kind != Kind::Tp {
+                self.fail_rx(i, abort::BAD_SEQUENCE, now);
+                return;
+            }
+            s.gap = true;
+            s.granted = false;
+            s.deadline = now + T1_NS;
+            if packet == s.last {
+                self.request_again(i, now);
+            }
+            return;
+        }
+        s.granted = false;
         let take = (s.size - s.data.len()).min(7);
         s.data.extend_from_slice(&d[1..1 + take]);
         s.next += 1;
@@ -1212,7 +1337,7 @@ impl J1939 {
                 }
                 let exclude = match origin {
                     Origin::Local(Some(socket)) => {
-                        let notice = self.make_notice(
+                        let mut notice = self.make_notice(
                             J1939NoticeKind::TxDone,
                             h.sa,
                             h.da,
@@ -1221,6 +1346,7 @@ impl J1939 {
                             0,
                             timestamp_ns,
                         );
+                        notice.acked = d.len() as u32;
                         self.notice_tx(socket, notice);
                         Some(socket)
                     }
@@ -1251,7 +1377,7 @@ impl J1939 {
             let s = &self.tx[i];
             if s.state == TxState::Waiting && now >= s.deadline {
                 let (kind, sa, da, pgn) = (s.kind, s.sa, s.da, s.pgn);
-                self.push_abort(kind, sa, da, pgn, abort::TIMEOUT);
+                self.push_abort(kind, Role::Originator, sa, da, pgn, abort::TIMEOUT);
                 self.finish_tx(i, J1939NoticeKind::TxAborted, abort::TIMEOUT, now);
                 // Starting the next in line may have changed the list.
                 i = 0;
@@ -1261,9 +1387,21 @@ impl J1939 {
         }
         let mut i = 0;
         while i < self.rx.len() {
-            if now >= self.rx[i].deadline {
-                self.fail_rx(i, abort::TIMEOUT, now);
+            let s = &self.rx[i];
+            if now < s.deadline {
+                i += 1;
+                continue;
+            }
+            let before = self.rx.len();
+            if s.kind == Kind::Tp && !s.granted {
+                // The data stopped within a block: its end was lost. The
+                // receiver may ask again or give up (SAE J1939-21,
+                // 5.10.3.2 and figure C5).
+                self.request_again(i, now);
             } else {
+                self.fail_rx(i, abort::TIMEOUT, now);
+            }
+            if self.rx.len() == before {
                 i += 1;
             }
         }

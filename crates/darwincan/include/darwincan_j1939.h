@@ -83,6 +83,9 @@ struct dcan_j1939_addr {
 #define DCAN_J1939_TX_ABORT 2 /* a message sent was given up (J1939_EE_INFO_TX_ABORT) */
 #define DCAN_J1939_RX_RTS   3 /* a long message begins to arrive (J1939_EE_INFO_RX_RTS) */
 #define DCAN_J1939_RX_ABORT 4 /* a long message was given up part-way (J1939_EE_INFO_RX_ABORT) */
+#define DCAN_J1939_RX_DPO   5 /* a message over 1785 bytes is still arriving: its sender has
+                               * begun another block of packets, and info.acked bytes are
+                               * here (J1939_EE_INFO_RX_DPO) */
 
 /* Why, in dcan_j1939_info.reason: the reason of the connection abort
  * message of SAE J1939-21, sent or received. */
@@ -109,6 +112,9 @@ struct dcan_j1939_info {
 	uint8_t notice;             /* DCAN_J1939_MESSAGE, or the kind of notice */
 	uint8_t reason;             /* for the two aborts: DCAN_J1939_ABORT_* */
 	uint32_t size;              /* the length of the whole message */
+	uint32_t acked;             /* for a notice: how many of its bytes have arrived so
+	                             * far, or have been acknowledged by the receiver
+	                             * (J1939_NLA_BYTES_ACKED); for a message, size */
 };
 
 /* ---- Sockets ----------------------------------------------------------- */
@@ -154,6 +160,14 @@ int dcan_j1939_connect(dcan_j1939 *sock, const struct dcan_j1939_addr *addr);
 int dcan_j1939_send(dcan_j1939 *sock, const uint8_t *data, size_t len);
 int dcan_j1939_sendto(dcan_j1939 *sock, const uint8_t *data, size_t len,
 		      const struct dcan_j1939_addr *dst);
+
+/* As dcan_j1939_sendto, at a priority of this message's own, 0 (highest)
+ * to 7, in place of the socket's. With dst NULL the message goes to
+ * where the socket is connected. Linux's documentation describes a
+ * priority per socket only (SO_J1939_SEND_PRIO); this has no documented
+ * counterpart there. */
+int dcan_j1939_sendto_prio(dcan_j1939 *sock, const uint8_t *data, size_t len,
+			   const struct dcan_j1939_addr *dst, int priority);
 
 /* Receive a message, waiting at most timeout_ms as for dcan_raw_recv.
  * Returns 1 when one was received and 0 if none came in time.

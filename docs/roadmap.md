@@ -14,7 +14,7 @@ darwinCAN is at version 0.1. It is usable and has been tested on real buses, but
 | CAN FD | Tested between two channels of a PCAN-USB X6. |
 | ISO-TP (normal addressing, over classic CAN and CAN FD) | Working. The STmin gap has been verified on the wire. |
 | Broadcast manager (`CAN_BCM`) | Working, and tested on hardware. |
-| SAE J1939 (`CAN_J1939`), including BAM, RTS/CTS and the extended transport protocol | Working, but so far tested only against itself. |
+| SAE J1939 (`CAN_J1939`), including BAM, RTS/CTS and the extended transport protocol | Working. Tested against itself and against Linux's J1939 stack on one bus, not yet against a J1939 device. |
 | Command-line tools (`candump`, `cansend`, `cangen`, `canplayer`, `isotpsend`, `isotprecv`, `canctl`) | Working. |
 | Rust library, C library and Python package | Working. There is no stability promise yet. |
 | Launch agent (`darwincand install`) | The mechanism is covered by tests, but it has seen little everyday use so far. |
@@ -29,7 +29,8 @@ The items below are listed roughly in the order they are likely to be done.
 |---|---|
 | J1939 tools | `j1939spy`, `j1939cat`, `j1939sr` and `testj1939`, as in can-utils, and `j1939acd` to claim and defend an address. |
 | J1939 from Python | A socket class over the C API, in the same way that `IsoTpSocket` wraps ISO-TP. |
-| J1939 checked against a reference | A test against a real J1939 device, or against Linux's `CAN_J1939`, on the same bus. |
+| J1939 checked against a device | Messages of every kind have been exchanged with Linux's `CAN_J1939` on one bus. A real J1939 device, address claiming against another implementation, and several messages at once are still to do. |
+| J1939 extended transport protocol checked against ISO 11783-3 | The transport protocol for up to 1785 bytes follows SAE J1939-21. The extended protocol has not been compared with its standard, and it does not ask again for a missing packet. |
 | Automatic bus-off recovery (`restart-ms`) | Today an interface that has gone bus-off has to be taken down and brought up again by hand. |
 | Kvaser "leaf" backend | Support for the Leaf Light v2 and Kvaser's other older adapters. |
 | gs_usb / candleLight backend | Support for the open firmware used by many low-cost adapters. |
@@ -41,13 +42,12 @@ The items below are listed roughly in the order they are likely to be done.
 
 Some smaller pieces were left out of features that otherwise exist:
 
-- **J1939:** the `RX_DPO` notice, a per-message priority in the C API, and retransmission requested by the receiver. At present a transport session with a missing packet is aborted rather than repaired.
 - **Python:** the broadcast manager's receive jobs, and a ready-made connection class for `udsoncan`.
 - **Tools:** the options listed as unavailable in [tools.md](tools.md#coming-from-linux).
 
 ## Known limitations
 
-- **There is no independent reference yet.** Every hardware test so far has had darwinCAN at both ends of the cable. Controllers from two different makers agree with each other, but nothing has been checked against another CAN stack.
+- **There is little independent reference yet.** Almost every hardware test so far has had darwinCAN at both ends of the cable. The exception is J1939, which has exchanged messages with Linux's stack; nothing else has been checked against another CAN stack.
 - **Bus-off needs a manual restart.** It has also not been provoked on every supported adapter.
 - **A daemon that is killed outright leaves its adapters on the bus.** After `kill -9` or a crash, the adapters keep acknowledging frames until the next daemon starts and takes them off. A daemon that is stopped normally takes them off the bus itself.
 - **ISO-TP gaps are slightly longer than STmin on hardware.** The excess is the time an adapter takes to report that a frame was sent, which is between 0.02 and 1.2 ms depending on the adapter. This is the price of never sending earlier than STmin allows.

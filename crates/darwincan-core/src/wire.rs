@@ -25,7 +25,7 @@ use crate::{
 /// The version of the protocol this build speaks, carried in every
 /// message header. Daemon and client must agree on it exactly; it goes
 /// up with every change to a message.
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 const HEADER_LEN: usize = 8;
 /// Upper bound on a payload, to keep a corrupt header from allocating wildly.
 /// The longest J1939 message (117 MB) fits.
@@ -657,6 +657,7 @@ impl Message {
                 out.extend_from_slice(&n.src_name.to_le_bytes());
                 out.extend_from_slice(&n.dst_name.to_le_bytes());
                 out.extend_from_slice(&n.size.to_le_bytes());
+                out.extend_from_slice(&n.acked.to_le_bytes());
                 out.push(n.reason);
                 T_J1939_NOTICE
             }
@@ -868,6 +869,7 @@ impl Message {
                 src_name: r.u64()?,
                 dst_name: r.u64()?,
                 size: r.u32()?,
+                acked: r.u32()?,
                 reason: r.u8()?,
             }),
             T_DROPPED => Message::Dropped { total: r.u64()? },
@@ -1209,7 +1211,20 @@ mod tests {
                 src_name: 1,
                 dst_name: 2,
                 size: 1785,
+                acked: 700,
                 reason: crate::j1939::abort::TIMEOUT,
+            }),
+            Message::J1939Notice(J1939Notice {
+                kind: J1939NoticeKind::RxOffset,
+                timestamp_ns: 100,
+                pgn: 0xEF00,
+                src_addr: 0x80,
+                dst_addr: 0x90,
+                src_name: 0,
+                dst_name: 0,
+                size: 4000,
+                acked: 1785,
+                reason: 0,
             }),
             Message::LinkState(LinkState::Up),
             Message::LinkState(LinkState::BusOff),

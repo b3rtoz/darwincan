@@ -216,6 +216,7 @@ pub struct dcan_j1939_info {
     pub notice: u8,
     pub reason: u8,
     pub size: u32,
+    pub acked: u32,
 }
 
 /// A J1939 socket on one interface.
@@ -1380,6 +1381,30 @@ pub unsafe extern "C" fn dcan_j1939_sendto(
     })
 }
 
+/// Send a message at a priority of its own: to `dst` or, with a null
+/// `dst`, to where the socket is connected.
+#[no_mangle]
+pub unsafe extern "C" fn dcan_j1939_sendto_prio(
+    sock: *mut dcan_j1939,
+    data: *const u8,
+    len: usize,
+    dst: *const dcan_j1939_addr,
+    priority: c_int,
+) -> c_int {
+    guard(|| match (j1939(sock), j1939_data(data, len)) {
+        (Ok(_), Ok(_)) if !(0..=7).contains(&priority) => invalid("a priority is 0 to 7"),
+        (Ok(sock), Ok(data)) if dst.is_null() => {
+            done(sock.sock.send_with_priority(data, priority as u8))
+        }
+        (Ok(sock), Ok(data)) => done(sock.sock.send_to_with_priority(
+            data,
+            &j1939_addr(dst),
+            priority as u8,
+        )),
+        (Err(code), _) | (_, Err(code)) => code,
+    })
+}
+
 /// Receive a message or, on a socket that asked for them, a notice,
 /// waiting at most `timeout_ms` (negative: without limit; 0: only what
 /// has arrived).
@@ -1433,6 +1458,7 @@ pub unsafe extern "C" fn dcan_j1939_recv(
                     notice: 0,
                     reason: 0,
                     size: m.data.len() as u32,
+                    acked: m.data.len() as u32,
                 };
                 1
             }
@@ -1450,6 +1476,7 @@ pub unsafe extern "C" fn dcan_j1939_recv(
                     notice: n.kind as u8,
                     reason: n.reason,
                     size: n.size,
+                    acked: n.acked,
                 };
                 1
             }
@@ -1748,7 +1775,7 @@ mod tests {
         // As on Linux.
         assert_eq!(size_of::<j1939_filter>(), 32);
         assert_eq!(size_of::<dcan_j1939_addr>(), 16);
-        assert_eq!(size_of::<dcan_j1939_info>(), 40);
+        assert_eq!(size_of::<dcan_j1939_info>(), 48);
     }
 
     #[test]

@@ -39,7 +39,7 @@ _Static_assert(RX_CHANGED == 12, "the operations are numbered as on Linux");
 _Static_assert(sizeof(struct j1939_filter) == 32, "j1939_filter as on Linux");
 _Static_assert(offsetof(struct j1939_filter, addr) == 24, "j1939_filter addr");
 _Static_assert(sizeof(struct dcan_j1939_addr) == 16, "dcan_j1939_addr");
-_Static_assert(sizeof(struct dcan_j1939_info) == 40, "dcan_j1939_info");
+_Static_assert(sizeof(struct dcan_j1939_info) == 48, "dcan_j1939_info");
 
 #define CHECK(what)                                                          \
 	do {                                                                 \
@@ -583,13 +583,24 @@ static void j1939(void)
 	CHECK(memcmp(in, out, 1000) == 0);
 	CHECK(dcan_j1939_recv(a, in, sizeof in, &info, 5000) == 1);
 	CHECK(info.notice == DCAN_J1939_TX_DONE && info.size == 1000);
+	CHECK(info.acked == 1000);
 	CHECK(info.src.addr == 0x80 && info.dst_addr == 0x90);
 	CHECK(dcan_j1939_set_notices(a, 0) == 0);
-	CHECK(dcan_j1939_set_notices(b, 0) == 0);
 	CHECK(dcan_j1939_sendto(a, out, sizeof out, &to_b) == 0);
+	/* The extended protocol's sender says where each block of packets
+	 * belongs: 3000 bytes are 429 packets, in blocks of 255. */
+	CHECK(dcan_j1939_recv(b, in, sizeof in, &info, 5000) == 1);
+	CHECK(info.notice == DCAN_J1939_RX_RTS && info.size == sizeof out);
+	CHECK(dcan_j1939_recv(b, in, sizeof in, &info, 5000) == 1);
+	CHECK(info.notice == DCAN_J1939_RX_DPO && info.size == sizeof out);
+	CHECK(info.src.addr == 0x80 && info.src.pgn == 0xEF00 && info.acked == 0);
+	CHECK(dcan_j1939_recv(b, in, sizeof in, &info, 5000) == 1);
+	CHECK(info.notice == DCAN_J1939_RX_DPO && info.acked == 255 * 7);
+	CHECK(dcan_j1939_set_notices(b, 0) == 0);
 	/* A buffer too small gets the start; the size is the whole. */
 	memset(in, 0, sizeof in);
 	CHECK(dcan_j1939_recv(b, in, 4, &info, 10000) == 1);
+	CHECK(info.notice == DCAN_J1939_MESSAGE);
 	CHECK(info.size == sizeof out);
 	CHECK(memcmp(in, out, 4) == 0 && in[4] == 0);
 
@@ -614,6 +625,20 @@ static void j1939(void)
 	CHECK(dcan_j1939_send(a, out, 5) == 0);
 	CHECK(dcan_j1939_recv(b, in, sizeof in, &info, 5000) == 1);
 	CHECK(info.src.pgn == 0xAA00 && info.size == 5 && info.priority == 3);
+	/* A priority for one message, to a destination and connected. */
+	CHECK(dcan_j1939_sendto_prio(a, out, 2, &other_pgn, 1) == 0);
+	CHECK(dcan_j1939_recv(b, in, sizeof in, &info, 5000) == 1);
+	CHECK(info.size == 2 && info.priority == 1);
+	CHECK(dcan_j1939_sendto_prio(a, out, 4, NULL, 0) == 0);
+	CHECK(dcan_j1939_recv(b, in, sizeof in, &info, 5000) == 1);
+	CHECK(info.src.pgn == 0xAA00 && info.size == 4 && info.priority == 0);
+	CHECK(dcan_j1939_send(a, out, 5) == 0);
+	CHECK(dcan_j1939_recv(b, in, sizeof in, &info, 5000) == 1);
+	CHECK(info.priority == 3);
+	CHECK(dcan_j1939_sendto_prio(a, out, 2, &other_pgn, 8) ==
+	      DCAN_ERROR_INVALID_ARGUMENT);
+	CHECK(dcan_j1939_sendto_prio(a, out, 2, &other_pgn, -1) ==
+	      DCAN_ERROR_INVALID_ARGUMENT);
 	CHECK(dcan_j1939_set_filters(b, NULL, 0) == 0);
 	CHECK(dcan_j1939_set_promisc(listener, 1) == 0);
 	CHECK(dcan_j1939_send(a, out, 1) == 0);

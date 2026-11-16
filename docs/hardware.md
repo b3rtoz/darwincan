@@ -101,7 +101,7 @@ The following points are worth knowing:
 - Bus-off has not been provoked on the Kvaser adapter, nor on any adapter since the daemon moved to version 0.2 of its USB library.
 - The longest run is 30 minutes at half bus load; nothing has run for hours, at full load from several nodes, or with more than two nodes.
 - CAN FD has been run only over a short cable between two channels of one adapter.
-- J1939 has been run only against itself.
+- J1939 has been run against itself and against Linux's J1939 stack, not against a J1939 device.
 
 The full list, with the details, is under "Open" in the [validation log](notes/hardware-validation-log.md#open).
 

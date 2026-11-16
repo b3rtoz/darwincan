@@ -231,6 +231,10 @@ fn node_loop(shared: Arc<Shared>, bus: Arc<Bus>, node_id: u64, input: Receiver<N
     let mut awaiting: VecDeque<(Frame, Option<u64>, u64)> = VecDeque::new();
     // Read ahead of its turn while the stack was about to end.
     let mut ahead: Option<NodeInput> = None;
+    // The last socket has closed: the stack ends once what it still has
+    // to send (an abort for a message that socket had not finished, or
+    // frames it had just sent) is on the bus.
+    let mut ending = false;
     loop {
         let now = now_ns();
         while awaiting.len() < IN_FLIGHT {
@@ -242,6 +246,19 @@ fn node_loop(shared: Arc<Shared>, bus: Arc<Bus>, node_id: u64, input: Receiver<N
                 Err(_) => {
                     stack.link_down(now);
                     break;
+                }
+            }
+        }
+        if ending && ahead.is_none() && awaiting.is_empty() && !stack.wants_transmit(now) {
+            let mut running = shared.j1939.running.lock().unwrap();
+            match input.try_recv() {
+                // A socket opened meanwhile, or a frame came: carry on.
+                Ok(event) => ahead = Some(event),
+                Err(_) => {
+                    running.remove(&bus.index);
+                    drop(running);
+                    bus.remove_sink(node_id);
+                    return;
                 }
             }
         }
@@ -312,6 +329,7 @@ fn node_loop(shared: Arc<Shared>, bus: Arc<Bus>, node_id: u64, input: Receiver<N
                 // The stack's thread serves every socket on the
                 // interface and keeps the protocol's time, so it does not
                 // wait long for one client to make room for an answer.
+                ending = false;
                 if session::give_answer(&out, answer) {
                     outs.insert(id, out);
                     clients.insert(id, client);
@@ -335,19 +353,7 @@ fn node_loop(shared: Arc<Shared>, bus: Arc<Bus>, node_id: u64, input: Receiver<N
                 stack.close(id, now);
                 outs.remove(&id);
                 clients.remove(&id);
-                if stack.is_empty() {
-                    let mut running = shared.j1939.running.lock().unwrap();
-                    match input.try_recv() {
-                        // A socket opened meanwhile: carry on.
-                        Ok(event) => ahead = Some(event),
-                        Err(_) => {
-                            running.remove(&bus.index);
-                            drop(running);
-                            bus.remove_sink(node_id);
-                            return;
-                        }
-                    }
-                }
+                ending = stack.is_empty();
             }
             Some(NodeInput::Removed) => {
                 for out in outs.values() {

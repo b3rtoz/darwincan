@@ -503,6 +503,24 @@ The X6 on the same build, later that day: connectors CAN1 and CAN2 (`can0`, `can
 
 So CAN FD is still accepted on firmware 3.2.0, which the new refusal for firmware older than 2.0 must not affect. Not re-tested: the classic PCAN-USB, which was not attached. Its change (a place in the transmit window is given back for a frame it will never report) has a unit test but has not run on the adapter, and the refusal itself has not been seen on an adapter with old firmware.
 
+### J1939 against Linux's stack (2026-11-16)
+
+The first run with something other than darwinCAN at the far end. The Kvaser USBcan Light 4xHS was handed to a Linux virtual machine on the same Mac (Ubuntu 24.04 for ARM, kernel 6.8, can-utils 2023.03, the `kvaser_usb` driver), its channel 1 on the bench bus with X6 connector CAN1 (`can0`), terminated, nothing else on the bus, 250 kbit/s. Linux had address 0x90 and used `j1939cat`; darwinCAN had address 0x80 and a test program on the Rust library. Data was random and compared by checksum. The adapters went straight into the Mac. Timing through a virtual machine's USB is not representative, so only the broadcast gap was measured, on the X6's timestamps.
+
+| Check | Result |
+|---|---|
+| darwinCAN to Linux: 8, 9, 100 and 1785 bytes (one frame and RTS/CTS), 1786 and 20,000 bytes (extended protocol) | All intact. Linux asked for 255 packets at a time; 20,000 bytes took 1.6 s. Linux reported one `RX DPO` for each of the 2 and 12 blocks |
+| Linux to darwinCAN: the same six lengths | All intact. darwinCAN gave one notice at the start of each long message, and one for each offset of the extended ones (2 and 12) |
+| Broadcast of 700 bytes, each way | Intact both ways. darwinCAN's packets were 51.8 to 52.0 ms apart, Linux's 49.8 to 56.0 ms |
+| darwinCAN's socket closed 80 ms into sending 1785 bytes | darwinCAN sent an abort with reason 250 and the sender's role in the third byte (`FF FA FC`). Linux ended its receive session at once (`RX ABT`, protocol error), not 750 ms later by timeout: it accepts an abort that says who sent it |
+| A packet lost on the way from Linux to darwinCAN: a forwarder between `can0` and a virtual interface left out packet 4 of 15 once, and the darwinCAN socket was on the virtual interface | darwinCAN asked again from packet 4 (`CTS` for 12 packets) 1.8 ms after packet 15. Linux sent packets 4 to 15 again, then at once an abort with reason 5. darwinCAN had the whole message by then, delivered it intact and acknowledged it. Linux's sender reported the message as failed (`TX ABT`, "State not recoverable") |
+
+What this shows: the two stacks carry each other's messages by every transport there is, and an abort from darwinCAN is understood. It also shows one way they do not agree. Linux 6.8 sends an abort after it has answered a request for packets again, so a message that darwinCAN repaired arrives while its Linux sender is told that it failed. Watched on a virtual interface inside the virtual machine, with the other node played frame by frame, Linux's stack also did not ask again for a missing packet (it aborted with a timeout), sent packets again from wherever it was asked, ended a session on an acknowledgement that came early, and put FFh in the third byte of its aborts. darwinCAN follows SAE J1939-21 (May 2022) in each of these; see the decisions record.
+
+Two faults were found. The daemon did not put on the bus what a J1939 stack still had to send when its last socket closed, so the abort for an unfinished message was never sent; in the first run Linux waited for its timeout. The stack now ends once those frames are out. And a first version of the forwarder passed frames round in a circle for about eight seconds (some 30,000 frames on the bench bus); both controllers stayed error-active. The forwarder now uses one socket for each interface, which does not receive what it sent.
+
+Not done: more than one message at a time, address claiming between the two (NAMEs), Linux's J1939 tools against darwinCAN's (there are none yet), a clear-to-send during a transfer, and anything through the Kvaser backend, which was not in use because Linux had the adapter.
+
 ## Bugs found on hardware and fixed
 
 | Symptom | Cause | Fixed |
@@ -521,6 +539,7 @@ So CAN FD is still accepted on firmware 3.2.0, which the new refusal for firmwar
 | ISO-TP frames closer together than STmin | STmin was timed from handing a frame to the adapter. The frame's time on the wire is now added | 2026-11-12 |
 | A flush, or any other request the daemon acknowledges, failed with "Resource temporarily unavailable" when the program had last received with a short timeout and a frame ahead of the request was waiting for room in an adapter (seen from Python with the Kvaser alone on the bus) | The socket's read timeout, set by the last receive, also cut the wait for an acknowledgement short. An acknowledgement is now waited for until it comes | With the Kvaser backend |
 | The X6's connectors changed interface names when it was plugged in again | Its three USB devices were attached in the order the system found them, which varies. They are now gathered and attached in the order of their ports on the X6's hub | 2026-11-14 |
+| A J1939 abort for a message whose socket closed never reached the bus when that socket was the last on its interface; the receiver waited for its timeout | The interface's stack ended with its last socket, before the frames it still had to send were handed over. It now ends once they are out | 2026-11-16 |
 
 ## Open
 
@@ -531,7 +550,7 @@ Needs the current wiring:
 - **A second "bus off" from the classic PCAN-USB when it is restarted** after a bus-off, just before "error active". Seen in one of two restarts. Harmless, since "error active" follows, but wrong.
 - **Bus-off counters on the X6** read tx 127 in its bus-off report, where the classic PCAN-USB reads 248.
 - **Automatic bus-off recovery** (`restart-ms`) does not exist; recovery is down and up by hand.
-- **J1939 against something that is not darwinCAN:** a real ECU, or a Linux machine with `CAN_J1939` on the same bus. Until then it is tested against itself only.
+- **J1939 against a real ECU.** It has run against Linux's stack (2026-11-16) but not against a device. Address claiming and several messages at once have not been run against Linux either.
 - **Kept names with the adapters plugged in in another order.** The names are kept since 2026-11-15 and held over three daemon starts (see "Names, indices and the rest of the Linux behaviour"), but the adapters have not been unplugged and plugged in the other way round since, nor the classic PCAN-USB moved to another port.
 - **Unplug during sleep, and sleep with an ISO-TP transfer in flight.**
 - **Mid-flood timestamp glitch on the X6.** Seen once on 2026-11-12: five frames in a back-to-back flood got the same timestamp. Probably the calibration message fault fixed on 2026-11-13 (see the bugs table); not seen again, but not reproduced on purpose either.

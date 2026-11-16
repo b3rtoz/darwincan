@@ -1289,6 +1289,17 @@ impl J1939Socket {
         })
     }
 
+    /// As [`send`](Self::send), at a priority of this message's own: 0
+    /// (highest) to 7.
+    pub fn send_with_priority(&self, data: &[u8], priority: u8) -> Result<()> {
+        sendable(data)?;
+        self.conn.send_acked(&Message::J1939Send {
+            dst: None,
+            priority: Some(priority),
+            data: data.to_vec(),
+        })
+    }
+
     /// As [`send_to`](Self::send_to), at a priority of this message's
     /// own: 0 (highest) to 7.
     pub fn send_to_with_priority(&self, data: &[u8], dst: &J1939Addr, priority: u8) -> Result<()> {

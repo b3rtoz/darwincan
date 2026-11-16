@@ -318,6 +318,212 @@ fn a_send_on_an_interface_that_is_down_fails() {
     );
 }
 
+/// A sender on the bus, played on a raw socket: it sends the packets it is
+/// asked for, and leaves out those `skip` picks (by number, and by how
+/// often that number has been asked for).
+fn play_sender(
+    wire: &RawSocket,
+    data: &[u8],
+    skip: impl Fn(u8, u32) -> bool,
+    mut on_cts: impl FnMut(u8, u8),
+) -> Frame {
+    let packets = data.len().div_ceil(7) as u8;
+    let size = data.len() as u16;
+    wire.send(&ext(
+        0x1CEC_8033,
+        &[16, size as u8, (size >> 8) as u8, packets, 0xFF, 0, 0xEF, 0],
+    ))
+    .unwrap();
+    let mut asked = [0u32; 256];
+    loop {
+        let answer = wire.recv().unwrap().frame;
+        assert_eq!(answer.can_id() & CAN_EFF_MASK, 0x1CEC_3380);
+        let d = answer.data();
+        if d[0] != 17 {
+            return answer;
+        }
+        on_cts(d[1], d[2]);
+        for n in d[2]..d[2] + d[1] {
+            asked[usize::from(n)] += 1;
+            if skip(n, asked[usize::from(n)]) {
+                continue;
+            }
+            let start = usize::from(n - 1) * 7;
+            let chunk = &data[start..(start + 7).min(data.len())];
+            let mut dt = [0xFFu8; 8];
+            dt[0] = n;
+            dt[1..1 + chunk.len()].copy_from_slice(chunk);
+            wire.send(&ext(0x1CEB_8033, &dt)).unwrap();
+        }
+    }
+}
+
+/// A raw socket that receives what the daemon answers address 0x33.
+fn sender_wire(path: &Path) -> RawSocket {
+    let wire = raw(path);
+    wire.set_filters(&[Filter::new(
+        0x00EC_3380 | darwincan::CAN_EFF_FLAG,
+        0x00FF_FFFF | darwincan::CAN_EFF_FLAG,
+    )])
+    .unwrap();
+    wire
+}
+
+#[test]
+fn a_packet_lost_on_the_way_is_asked_for_again() {
+    let (_d, path) = start();
+    let ecu = open(&path, 0x80);
+    let wire = sender_wire(&path);
+    let data = payload(100);
+    let mut grants = Vec::new();
+    // The fourth packet is left out the first time.
+    let end = play_sender(
+        &wire,
+        &data,
+        |n, times| n == 4 && times == 1,
+        |count, first| grants.push((count, first)),
+    );
+    assert_eq!(grants, [(15, 1), (12, 4)]);
+    // End of message acknowledgement: 100 bytes in 15 packets.
+    assert_eq!(end.data(), &[19, 100, 0, 15, 0xFF, 0, 0xEF, 0]);
+    let m = ecu.recv().unwrap();
+    assert_eq!(m.data, data);
+    assert_eq!(m.src, J1939Addr::new(0x33, 0xEF00));
+}
+
+#[test]
+fn a_packet_that_never_comes_ends_the_session_after_two_requests() {
+    let (_d, path) = start();
+    let ecu = open(&path, 0x80);
+    ecu.set_notices(true).unwrap();
+    let wire = sender_wire(&path);
+    let mut grants = Vec::new();
+    let end = play_sender(
+        &wire,
+        &payload(100),
+        |n, _| n == 4,
+        |count, first| grants.push((count, first)),
+    );
+    assert_eq!(grants, [(15, 1), (12, 4), (12, 4)]);
+    assert_eq!(
+        end.data(),
+        &[255, abort::RETRANSMIT_LIMIT, 0xFD, 0xFF, 0xFF, 0, 0xEF, 0]
+    );
+    let kinds: Vec<(J1939NoticeKind, u8)> = (0..2)
+        .map(|_| match ecu.recv_event().unwrap() {
+            J1939Event::Notice(n) => (n.kind, n.reason),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            (J1939NoticeKind::RxStarted, 0),
+            (J1939NoticeKind::RxAborted, abort::RETRANSMIT_LIMIT)
+        ]
+    );
+}
+
+#[test]
+fn the_receiver_of_an_extended_message_is_told_of_each_block() {
+    let (_d, path) = start();
+    let a = open(&path, 0x80);
+    let b = open(&path, 0x90);
+    b.set_notices(true).unwrap();
+    // 572 packets: three blocks of at most 255.
+    let data = payload(4000);
+    a.send_to(&data, &J1939Addr::new(0x90, 0xEF00)).unwrap();
+    let mut kinds = Vec::new();
+    let mut have = Vec::new();
+    let message = loop {
+        match b.recv_event().unwrap() {
+            J1939Event::Notice(n) => {
+                assert_eq!((n.src_addr, n.dst_addr, n.pgn), (0x80, 0x90, 0xEF00));
+                assert_eq!(n.size, 4000);
+                kinds.push(n.kind);
+                have.push(n.acked);
+            }
+            J1939Event::Message(m) => break m,
+        }
+    };
+    assert_eq!(
+        kinds,
+        [
+            J1939NoticeKind::RxStarted,
+            J1939NoticeKind::RxOffset,
+            J1939NoticeKind::RxOffset,
+            J1939NoticeKind::RxOffset
+        ]
+    );
+    // How much had arrived at each: nothing, one block, two blocks.
+    assert_eq!(have, [0, 0, 255 * 7, 510 * 7]);
+    assert_eq!(message.data, data);
+}
+
+#[test]
+fn one_message_can_have_a_priority_of_its_own() {
+    let (_d, path) = start();
+    let a = open(&path, 0x80);
+    let b = open(&path, 0x90);
+    let to = J1939Addr::new(0x90, 0xEF00);
+    a.set_send_priority(4).unwrap();
+    a.connect(to).unwrap();
+    a.send_to_with_priority(&[1], &to, 2).unwrap();
+    a.send_with_priority(&[2], 0).unwrap();
+    a.send(&[3]).unwrap();
+    let got: Vec<(Vec<u8>, u8)> = (0..3)
+        .map(|_| {
+            let m = b.recv().unwrap();
+            (m.data, m.priority)
+        })
+        .collect();
+    assert_eq!(got, [(vec![1], 2), (vec![2], 0), (vec![3], 4)]);
+}
+
+#[test]
+fn what_a_socket_sent_goes_out_although_it_closes_at_once() {
+    let (_d, path) = start();
+    let wire = raw(&path);
+    // Each socket is the only one on the interface, so the interface's
+    // stack ends with it.
+    for round in 0..20u8 {
+        let a = open(&path, 0x80);
+        for n in 0..40u8 {
+            a.send_to(&[round, n], &J1939Addr::new(0x90, 0xEF00))
+                .unwrap();
+        }
+        drop(a);
+        for n in 0..40u8 {
+            let frame = wire.recv().unwrap().frame;
+            assert_eq!(frame.data(), &[round, n], "round {round}");
+        }
+    }
+}
+
+#[test]
+fn closing_the_last_socket_tells_the_receiver_of_its_unfinished_message() {
+    let (_d, path) = start();
+    let wire = raw(&path);
+    wire.set_filters(&[Filter::new(
+        0x00EC_3380 | darwincan::CAN_EFF_FLAG,
+        0x00FF_FFFF | darwincan::CAN_EFF_FLAG,
+    )])
+    .unwrap();
+    let a = open(&path, 0x80);
+    a.send_to(&payload(100), &J1939Addr::new(0x33, 0xEF00))
+        .unwrap();
+    let rts = wire.recv().unwrap().frame;
+    assert_eq!(rts.data()[0], 16);
+    drop(a);
+    // The abort comes from the originator, with the reason for what the
+    // table does not list.
+    let abort_frame = wire.recv().unwrap().frame;
+    assert_eq!(
+        abort_frame.data(),
+        &[255, abort::OTHER, 0xFC, 0xFF, 0xFF, 0, 0xEF, 0]
+    );
+}
+
 #[test]
 fn a_connection_nobody_answers_is_given_up() {
     let (_d, path) = start();

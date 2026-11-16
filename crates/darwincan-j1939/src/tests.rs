@@ -529,6 +529,62 @@ fn a_hold_is_waited_out_and_a_block_can_be_asked_again() {
 }
 
 #[test]
+fn packets_are_sent_again_from_the_last_block_only() {
+    // Each case: the clear-to-send messages that are honoured, then one
+    // that is not. 100 bytes are 15 packets.
+    type Cts = (u8, u8);
+    let cases: [(&[Cts], Cts); 3] = [
+        // Packets beyond those that follow what has been sent.
+        (&[], (2, 5)),
+        (&[(4, 1)], (2, 6)),
+        // Packets before the block asked for last: asking for that block
+        // acknowledged them.
+        (&[(4, 1), (4, 5), (2, 5)], (4, 1)),
+    ];
+    for (honoured, refused) in cases {
+        let mut net = pair();
+        net.nodes[0].set_notices(1, true).unwrap();
+        net.nodes[0]
+            .send(
+                1,
+                Some(J1939Addr::new(0x55, 0xEF00)),
+                None,
+                payload(100),
+                net.now,
+            )
+            .unwrap();
+        let t0 = net.now;
+        net.nodes[0].poll_transmit(t0).unwrap();
+        let cts = |n: u8, first: u8| {
+            frame(
+                7,
+                PGN_TP_CM,
+                0x80,
+                0x55,
+                &[17, n, first, 0xFF, 0xFF, 0, 0xEF, 0],
+            )
+        };
+        for &(n, first) in honoured {
+            net.nodes[0].on_frame(&cts(n, first), t0, t0, Origin::Bus);
+            let seqs: Vec<u8> = std::iter::from_fn(|| net.nodes[0].poll_transmit(t0))
+                .map(|(f, _)| f.data()[0])
+                .collect();
+            assert_eq!(seqs, (first..first + n).collect::<Vec<u8>>());
+        }
+        net.nodes[0].on_frame(&cts(refused.0, refused.1), t0, t0, Origin::Bus);
+        let (abort_frame, _) = net.nodes[0].poll_transmit(t0).unwrap();
+        assert_eq!(abort_frame.data()[..2], [255, abort::OTHER], "{refused:?}");
+        assert!(net.nodes[0].tx.is_empty());
+        let notices = net.notices(0);
+        assert_eq!(notices[0].1.kind, J1939NoticeKind::TxAborted);
+        // What the receiver had acknowledged by then: the packets before
+        // the block it asked for last.
+        let block = honoured.last().map_or(1, |&(_, first)| u32::from(first));
+        assert_eq!(notices[0].1.acked, (block - 1) * 7);
+    }
+}
+
+#[test]
 fn a_connection_nobody_answers_times_out() {
     let mut net = pair();
     net.nodes[0].set_notices(1, true).unwrap();
@@ -546,7 +602,7 @@ fn a_connection_nobody_answers_times_out() {
     assert_eq!(net.log.len(), 2);
     assert_eq!(
         net.log[1].2.data(),
-        &[255, abort::TIMEOUT, 0xFF, 0xFF, 0xFF, 0, 0xEF, 0]
+        &[255, abort::TIMEOUT, 0xFC, 0xFF, 0xFF, 0, 0xEF, 0]
     );
     assert!(net.log[1].0 >= start + T3_NS);
     let notices = net.notices(0);
@@ -555,13 +611,104 @@ fn a_connection_nobody_answers_times_out() {
     assert_eq!(notices[0].1.reason, abort::TIMEOUT);
 }
 
+/// Lose the data packets of 0x80's connection to 0x90 that `which` picks,
+/// by sequence number and by how often that number has been sent.
+fn lose_data(net: &mut Net, etp: bool, mut which: impl FnMut(u8, u32) -> bool + 'static) {
+    let id = if etp { 0x1CC7_9080 } else { 0x1CEB_9080 };
+    let mut seen = [0u32; 256];
+    net.lose = Box::new(move |f| {
+        if f.can_id() & CAN_EFF_MASK != id {
+            return false;
+        }
+        let seq = f.data()[0];
+        seen[usize::from(seq)] += 1;
+        which(seq, seen[usize::from(seq)])
+    });
+}
+
+/// The clear-to-send messages node 1 sent: how many packets, from which.
+fn grants(net: &Net) -> Vec<(u8, u8)> {
+    net.log
+        .iter()
+        .filter(|(_, n, f)| *n == 1 && (f.can_id() >> 16) & 0xFF == 0xEC && f.data()[0] == 17)
+        .map(|(_, _, f)| (f.data()[1], f.data()[2]))
+        .collect()
+}
+
+fn aborts(net: &Net) -> Vec<(usize, u8)> {
+    net.log
+        .iter()
+        .filter(|(_, _, f)| matches!((f.can_id() >> 16) & 0xFF, 0xEC | 0xC8) && f.data()[0] == 255)
+        .map(|(_, n, f)| (*n, f.data()[1]))
+        .collect()
+}
+
 #[test]
-fn a_receiver_gives_up_when_the_data_stops() {
+fn a_missing_packet_is_asked_for_again_at_the_end_of_the_block() {
+    let mut net = pair();
+    net.nodes[0].set_notices(1, true).unwrap();
+    net.nodes[1].set_notices(2, true).unwrap();
+    // The fourth packet is lost the first time it is sent.
+    lose_data(&mut net, false, |seq, times| seq == 4 && times == 1);
+    let data = payload(100);
+    net.nodes[0]
+        .send(
+            1,
+            Some(J1939Addr::new(0x90, 0xEF00)),
+            None,
+            data.clone(),
+            net.now,
+        )
+        .unwrap();
+    let start = net.now;
+    net.settle();
+    // All fifteen packets are asked for, then the fourth and what follows.
+    assert_eq!(grants(&net), [(15, 1), (12, 4)]);
+    assert!(aborts(&net).is_empty());
+    // Nothing waited for a timer: the request went out with the block's
+    // last packet.
+    assert!(net.now < start + T1_NS);
+    let got = net.messages(1);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].1.data, data);
+    let notices = net.notices(0);
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].1.kind, J1939NoticeKind::TxDone);
+    assert_eq!((notices[0].1.size, notices[0].1.acked), (100, 100));
+    assert!(net.nodes[0].tx.is_empty() && net.nodes[1].rx.is_empty());
+}
+
+#[test]
+fn a_block_whose_end_is_lost_is_asked_for_again_when_the_data_stops() {
+    let mut net = pair();
+    lose_data(&mut net, false, |seq, times| seq == 15 && times == 1);
+    let data = payload(100);
+    net.nodes[0]
+        .send(
+            1,
+            Some(J1939Addr::new(0x90, 0xEF00)),
+            None,
+            data.clone(),
+            net.now,
+        )
+        .unwrap();
+    let start = net.now;
+    net.settle();
+    assert_eq!(grants(&net), [(15, 1), (1, 15)]);
+    assert!(aborts(&net).is_empty());
+    // The receiver waited for the packet as long as it has to, and the
+    // sender had not given up by then.
+    assert!(net.now >= start + T1_NS && net.now < start + T3_NS);
+    assert_eq!(net.messages(1)[0].1.data, data);
+}
+
+#[test]
+fn packets_are_asked_for_again_only_so_often() {
     let mut net = pair();
     net.nodes[0].set_notices(1, true).unwrap();
     net.nodes[1].set_notices(2, true).unwrap();
     // The fourth packet never arrives.
-    net.lose = Box::new(|f| f.can_id() & CAN_EFF_MASK == 0x1CEB_9080 && f.data()[0] == 4);
+    lose_data(&mut net, false, |seq, _| seq == 4);
     net.nodes[0]
         .send(
             1,
@@ -572,21 +719,197 @@ fn a_receiver_gives_up_when_the_data_stops() {
         )
         .unwrap();
     net.settle();
-    let aborts: Vec<&(u64, usize, Frame)> = net
-        .log
-        .iter()
-        .filter(|(_, _, f)| f.data()[0] == 255 && (f.can_id() >> 16) & 0xFF == 0xEC)
-        .collect();
-    // The receiver says the sequence is wrong when the fifth comes.
-    assert_eq!(aborts.len(), 1);
-    assert_eq!(aborts[0].1, 1);
-    assert_eq!(aborts[0].2.data()[1], abort::BAD_SEQUENCE);
-    assert!(net.messages(1).is_empty());
+    assert_eq!(grants(&net), [(15, 1), (12, 4), (12, 4)]);
+    assert_eq!(usize::from(MAX_RETRANSMIT_REQUESTS), grants(&net).len() - 1);
+    // Then the receiver gives the message up, and says why.
+    assert_eq!(aborts(&net), [(1, abort::RETRANSMIT_LIMIT)]);
     let notices = net.notices(0);
     assert_eq!(notices.len(), 1);
     assert_eq!(notices[0].1.kind, J1939NoticeKind::TxAborted);
-    assert_eq!(notices[0].1.reason, abort::BAD_SEQUENCE);
+    assert_eq!(notices[0].1.reason, abort::RETRANSMIT_LIMIT);
+    // Notices only: no message was delivered.
+    let kinds: Vec<J1939NoticeKind> = net
+        .outputs(1)
+        .iter()
+        .map(|(_, o)| match o {
+            Output::Notice(n) => n.kind,
+            Output::Message(_) => panic!("a message with a hole in it"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [J1939NoticeKind::RxStarted, J1939NoticeKind::RxAborted]
+    );
     assert!(net.nodes[0].tx.is_empty() && net.nodes[1].rx.is_empty());
+}
+
+#[test]
+fn a_packet_sent_twice_or_beyond_the_block_ends_the_session() {
+    for (seq, reason) in [(1, abort::DUPLICATE_SEQUENCE), (4, abort::BAD_SEQUENCE)] {
+        let mut net = pair();
+        // Three packets of five are asked for at once.
+        let rts = frame(7, PGN_TP_CM, 0x90, 0x33, &[16, 30, 0, 5, 3, 0, 0xEF, 0]);
+        let t0 = net.now;
+        net.nodes[1].on_frame(&rts, t0, t0, Origin::Bus);
+        let dt = |seq: u8| frame(7, PGN_TP_DT, 0x90, 0x33, &[seq, 0, 0, 0, 0, 0, 0, 0]);
+        net.nodes[1].on_frame(&dt(1), t0, t0, Origin::Bus);
+        net.nodes[1].on_frame(&dt(seq), t0, t0, Origin::Bus);
+        net.settle();
+        assert_eq!(aborts(&net), [(1, reason)]);
+        assert!(net.nodes[1].rx.is_empty());
+    }
+}
+
+#[test]
+fn the_receiver_of_an_extended_message_is_told_of_each_block() {
+    let mut net = pair();
+    net.nodes[1].set_notices(2, true).unwrap();
+    let data = payload(4000);
+    net.nodes[0]
+        .send(
+            1,
+            Some(J1939Addr::new(0x90, 0xEF00)),
+            None,
+            data.clone(),
+            net.now,
+        )
+        .unwrap();
+    net.settle();
+    assert!(aborts(&net).is_empty());
+    let out = net.outputs(1);
+    let notices: Vec<(J1939NoticeKind, u32)> = out
+        .iter()
+        .filter_map(|(_, o)| match o {
+            Output::Notice(n) => Some((n.kind, n.acked)),
+            Output::Message(_) => None,
+        })
+        .collect();
+    // One when the message begins, and one for each offset, which says
+    // how much of the message has arrived: 572 packets in blocks of 255.
+    assert_eq!(
+        notices,
+        [
+            (J1939NoticeKind::RxStarted, 0),
+            (J1939NoticeKind::RxOffset, 0),
+            (J1939NoticeKind::RxOffset, 255 * 7),
+            (J1939NoticeKind::RxOffset, 510 * 7),
+        ]
+    );
+    let Some((_, Output::Message(m))) = out.last() else {
+        panic!("the message comes after the notices");
+    };
+    assert_eq!(m.data, data);
+}
+
+#[test]
+fn an_extended_message_with_a_packet_missing_is_given_up() {
+    let mut net = pair();
+    net.nodes[0].set_notices(1, true).unwrap();
+    lose_data(&mut net, true, |seq, times| seq == 45 && times == 1);
+    net.nodes[0]
+        .send(
+            1,
+            Some(J1939Addr::new(0x90, 0xEF00)),
+            None,
+            payload(4000),
+            net.now,
+        )
+        .unwrap();
+    net.settle();
+    assert_eq!(aborts(&net), [(1, abort::BAD_SEQUENCE)]);
+    assert!(net.messages(1).is_empty());
+    let notices = net.notices(0);
+    assert_eq!(notices[0].1.kind, J1939NoticeKind::TxAborted);
+    assert_eq!(notices[0].1.reason, abort::BAD_SEQUENCE);
+}
+
+/// Node 0 has begun to send 100 bytes (15 packets) to address 0x55, which
+/// the test plays; its request to send has gone out.
+fn sending_to_0x55() -> Net {
+    let mut net = pair();
+    net.nodes[0].set_notices(1, true).unwrap();
+    net.nodes[0]
+        .send(
+            1,
+            Some(J1939Addr::new(0x55, 0xEF00)),
+            None,
+            payload(100),
+            net.now,
+        )
+        .unwrap();
+    let (rts, _) = net.nodes[0].poll_transmit(net.now).unwrap();
+    assert_eq!(rts.data()[0], 16);
+    net
+}
+
+fn from_0x55(data: &[u8; 8]) -> Frame {
+    frame(7, PGN_TP_CM, 0x80, 0x55, data)
+}
+
+#[test]
+fn a_clear_to_send_while_data_is_going_out_ends_the_session() {
+    let mut net = sending_to_0x55();
+    let t0 = net.now;
+    let cts = from_0x55(&[17, 15, 1, 0xFF, 0xFF, 0, 0xEF, 0]);
+    net.nodes[0].on_frame(&cts, t0, t0, Origin::Bus);
+    // Two packets are out; thirteen are still to go.
+    net.nodes[0].poll_transmit(t0).unwrap();
+    net.nodes[0].poll_transmit(t0).unwrap();
+    let again = from_0x55(&[17, 14, 2, 0xFF, 0xFF, 0, 0xEF, 0]);
+    net.nodes[0].on_frame(&again, t0, t0, Origin::Bus);
+    let (abort_frame, _) = net.nodes[0].poll_transmit(t0).unwrap();
+    // Reason 4, from the originator.
+    assert_eq!(
+        abort_frame.data(),
+        &[255, abort::CTS_WHILE_SENDING, 0xFC, 0xFF, 0xFF, 0, 0xEF, 0]
+    );
+    assert!(net.nodes[0].poll_transmit(t0).is_none());
+    let notices = net.notices(0);
+    assert_eq!(notices[0].1.kind, J1939NoticeKind::TxAborted);
+    assert_eq!(notices[0].1.reason, abort::CTS_WHILE_SENDING);
+}
+
+#[test]
+fn an_acknowledgement_before_the_last_packet_is_passed_over() {
+    let mut net = sending_to_0x55();
+    let t0 = net.now;
+    let eoma = from_0x55(&[19, 100, 0, 15, 0xFF, 0, 0xEF, 0]);
+    // Before any data was asked for, while data is going out, and when a
+    // block is out that is not the last.
+    net.nodes[0].on_frame(&eoma, t0, t0, Origin::Bus);
+    let cts = from_0x55(&[17, 5, 1, 0xFF, 0xFF, 0, 0xEF, 0]);
+    net.nodes[0].on_frame(&cts, t0, t0, Origin::Bus);
+    net.nodes[0].poll_transmit(t0).unwrap();
+    net.nodes[0].on_frame(&eoma, t0, t0, Origin::Bus);
+    while net.nodes[0].poll_transmit(t0).is_some() {}
+    net.nodes[0].on_frame(&eoma, t0, t0, Origin::Bus);
+    assert!(net.notices(0).is_empty());
+    assert_eq!(net.nodes[0].tx.len(), 1);
+    // After the last packet it ends the session.
+    let cts = from_0x55(&[17, 10, 6, 0xFF, 0xFF, 0, 0xEF, 0]);
+    net.nodes[0].on_frame(&cts, t0, t0, Origin::Bus);
+    while net.nodes[0].poll_transmit(t0).is_some() {}
+    net.nodes[0].on_frame(&eoma, t0, t0, Origin::Bus);
+    assert_eq!(net.notices(0)[0].1.kind, J1939NoticeKind::TxDone);
+}
+
+#[test]
+fn an_abort_ends_the_session_its_sender_had_that_role_in() {
+    // Node 0 sends PGN 0xEF00 to 0x55 and receives the same from it.
+    // The third byte of an abort from 0x55 says which it means: 0x55 as
+    // the originator (node 0 receiving), as the responder (node 0
+    // sending), or not said (both).
+    for (role, ends_tx, ends_rx) in [(0xFC, false, true), (0xFD, true, false), (0xFF, true, true)] {
+        let mut net = sending_to_0x55();
+        let t0 = net.now;
+        let rts = from_0x55(&[16, 30, 0, 5, 0xFF, 0, 0xEF, 0]);
+        net.nodes[0].on_frame(&rts, t0, t0, Origin::Bus);
+        assert_eq!((net.nodes[0].tx.len(), net.nodes[0].rx.len()), (1, 1));
+        let abort_frame = from_0x55(&[255, abort::RESOURCES, role, 0xFF, 0xFF, 0, 0xEF, 0]);
+        net.nodes[0].on_frame(&abort_frame, t0, t0, Origin::Bus);
+        assert_eq!(net.nodes[0].tx.is_empty(), ends_tx, "{role:#x}");
+        assert_eq!(net.nodes[0].rx.is_empty(), ends_rx, "{role:#x}");
+    }
 }
 
 #[test]
@@ -600,7 +923,7 @@ fn a_receiver_times_out_on_silence() {
     let last = net.log.last().unwrap();
     assert_eq!(
         last.2.data(),
-        &[255, abort::TIMEOUT, 0xFF, 0xFF, 0xFF, 0, 0xEF, 0]
+        &[255, abort::TIMEOUT, 0xFD, 0xFF, 0xFF, 0, 0xEF, 0]
     );
     assert_eq!(last.2.can_id() & CAN_EFF_MASK, 0x1CEC_3390);
     assert!(last.0 >= t0 + T2_NS);

@@ -159,6 +159,11 @@ pub enum J1939NoticeKind {
     /// A multi-frame message for this socket was given up part-way
     /// (`J1939_EE_INFO_RX_ABORT`).
     RxAborted = 4,
+    /// The sender of a message that comes by the extended transport
+    /// protocol has said where its next packets belong
+    /// (`J1939_EE_INFO_RX_DPO`): the message is still arriving, and the
+    /// notice says how much of it has.
+    RxOffset = 5,
 }
 
 impl J1939NoticeKind {
@@ -168,6 +173,7 @@ impl J1939NoticeKind {
             2 => J1939NoticeKind::TxAborted,
             3 => J1939NoticeKind::RxStarted,
             4 => J1939NoticeKind::RxAborted,
+            5 => J1939NoticeKind::RxOffset,
             _ => return None,
         })
     }
@@ -211,6 +217,10 @@ pub struct J1939Notice {
     pub dst_name: u64,
     /// The length of the whole message.
     pub size: u32,
+    /// How many of its bytes have arrived so far or, for a message this
+    /// socket sent, how many the receiver has acknowledged (Linux's
+    /// `J1939_NLA_BYTES_ACKED`).
+    pub acked: u32,
     /// For the aborted kinds, why: one of [`abort`].
     pub reason: u8,
 }
