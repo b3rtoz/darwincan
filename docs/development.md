@@ -149,3 +149,4 @@ Each of the following pitfalls has cost time:
 | `docs/tools.md` | A tool or a daemon option changes |
 | `docs/design.md`, `docs/notes/decisions.md` | A design decision is made or revisited |
 | `docs/roadmap.md` | Something planned is done, or something new is planned |
+| `CHANGELOG.md` | Anything a user of a release would notice changes |

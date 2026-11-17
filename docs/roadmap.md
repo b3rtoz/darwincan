@@ -48,7 +48,7 @@ Some smaller pieces were left out of features that otherwise exist:
 - **There is little independent reference yet.** Almost every hardware test so far has had darwinCAN at both ends of the cable. The exception is J1939, which has exchanged messages with Linux's stack; nothing else has been checked against another CAN stack.
 - **Bus-off needs a manual restart.** It has also not been provoked on every supported adapter.
 - **A daemon that is killed outright leaves its adapters on the bus.** After `kill -9` or a crash, the adapters keep acknowledging frames until the next daemon starts and takes them off. A daemon that is stopped normally takes them off the bus itself.
-- **ISO-TP gaps are slightly longer than STmin on hardware.** The excess is the time an adapter takes to report that a frame was sent, which is between 0.02 and 1.2 ms depending on the adapter. This is the price of never sending earlier than STmin allows.
+- **ISO-TP gaps are slightly longer than STmin on hardware.** The excess is the time an adapter takes to report that a frame was sent, which is between 0.02 and 1.4 ms depending on the adapter. This is the price of never sending earlier than STmin allows.
 - **Timestamps can read up to a millisecond late on a quiet bus** with some adapters. See [hardware.md](hardware.md#timing-on-real-adapters).
 - **An adapter without a serial number is named by its USB port.** This applies to the classic PCAN-USB, which gets a different interface name if it is moved to another port.
 - **A receive timeout applies to each read, not to the whole call.** A receive with a timeout can therefore return slightly later than asked, and noticeably later if another thread on the same socket is waiting for an acknowledgement from a stalled adapter.
@@ -62,6 +62,7 @@ A review of the code before the first public release found no memory-safety bug 
 - **A frame lost to a USB error is not reported to its sender.** The failure is logged, and on the PEAK adapters it is attributed to the next frame instead.
 - **A frame sent at the same moment an interface is taken down can stay in the adapter** and be transmitted when the interface next comes up.
 - **Shutdown takes interfaces off the bus one after another within a single two-second limit.** One unresponsive adapter can use up that time and leave the others on the bus.
+- **A PEAK adapter that another program has open as it is plugged in is not tried again.** The daemon waits up to five seconds for a Kvaser adapter, which a running web browser holds for a moment; for a PEAK adapter it tries once, and the adapter has to be plugged in again.
 - **The Kvaser backend does not confirm that listen-only mode was accepted** before starting a channel. It only requests listen-only on channels that report the capability, so this matters only if the firmware misreports.
 - **The timestamp mapping trusts the adapter's clock.** A single badly wrong timestamp from an adapter can make later timestamps read a few milliseconds early until the mapping corrects itself.
 - **The daemon holds its list of interfaces locked while it renames one or reads their state.** A program that renames interfaces in a tight loop can slow down the others.

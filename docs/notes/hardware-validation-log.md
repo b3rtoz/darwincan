@@ -581,6 +581,73 @@ Measured on virtual interfaces with the release build, and then run on the bench
 
 Not done: the limits themselves on real adapters, which behave no differently there; a message near the 128 MiB limits on a bus, which would take hours; and the classic PCAN-USB and the Kvaser backend, which were not in use.
 
+### All three adapters before the first release (2026-11-17)
+
+A regression run of the checks listed under "What tested covers" in hardware.md, on the build that has protocol version 7, the limit on message data, the daemon's own allocator and the changed fan-out. Only two nodes could be on the bus at once, so the run was three sessions with X6 connector CAN1 (`can0`) in each. The bus was terminated and had no other node. The adapters went straight into the computer. The classic PCAN-USB was in a port it had not been in before and so came up under a new name (`can11`); the X6 and the Kvaser kept their names, although the X6 was in another port than the day before.
+
+The classic PCAN-USB against the X6, 500 kbit/s unless stated:
+
+| Check | Result |
+|---|---|
+| Listen-only on the X6 while the classic PCAN-USB sends, and the reverse | The listener sees the frame and its retries; the sender reports error-warning (tx 96) and error-passive (tx 128); a send on the listen-only interface is refused |
+| Standard, 29-bit, remote and empty frames, each way | Intact, and shown as sent on the sender and received on the other |
+| 5000 frames back to back each way at 125 kbit/s, 500 kbit/s and 1 Mbit/s | All 30,000 received, in order, no error frames. At 500 kbit/s the classic PCAN-USB's stamps were 248 µs apart with a scatter of 17 µs, the X6's 264 µs apart with a scatter of 3 µs |
+| ISO-TP, 4095 bytes, each way, STmin 5 ms, 1 ms and 0 | Intact in all six. Idle time before a consecutive frame, less the frame's exact length: from the classic PCAN-USB 5.25 to 5.63 ms (mean 5.42) and, over fifteen more transfers by its own stamps, never under 1.18 ms at STmin 1 ms; from the X6 5.70 to 6.35 ms (mean 6.15) and 1.26 to 2.29 ms (mean 1.79). None under STmin |
+| J1939, 1785, 20,000 and 200,000 bytes to an address, each way | Intact; 200,000 bytes took 10.9 s from the X6 and 11.5 s from the classic PCAN-USB |
+| J1939 broadcast of 700 bytes, each way | Intact. Packets 50.6 to 50.8 ms apart from the X6 and 50.5 to 50.7 ms from the classic PCAN-USB |
+| A cyclic message every 10 ms for 3 s (Python's `send_periodic`) | 301 frames each; 9.90 to 10.11 ms apart from the X6, 9.86 to 10.18 ms from the classic PCAN-USB |
+| The partner down, five frames sent, the partner brought up | Nothing is shown as sent for 2 s but the error states; all five are shown, in order, when the partner is up. Each way |
+| Five frames waiting, the sender taken down and up, the partner brought up | None of the five goes out; a new frame does. Each way |
+| 40 frames with nobody to acknowledge | 32 taken, 8 refused after 500 ms each with "adapter transmit buffer is full". When the partner comes up all 32 arrive, in order. Each way |
+| Both directions at once, a frame every millisecond each way, for 8 minutes | The first 240,000 frames each way were recorded at both ends: none lost, none out of order, no error frames, no timestamp running backwards, and all but two gaps in each direction between 0.5 and 1.5 ms. The captures were full after 4 minutes, so the second half was sent but not checked. Nothing in the timing log |
+| Daemon stopped by SIGTERM with both up | "taken off the bus" logged for each; after a restart a frame from the classic PCAN-USB alone got no acknowledgement |
+| Daemon killed by SIGKILL with both up | The next daemon listed both as down, and a frame from either alone got no acknowledgement; 500 of 500 frames each way once both were up again |
+| The classic PCAN-USB unplugged while sending and receiving every 20 ms, then the X6 likewise | The programs on the removed interface were told at once ("the interface was removed", "USB transfer failed while sending a frame"), the daemon carried on, the other adapter went error-passive and its sender was refused after a second. Each came back under the same names, down; 500 of 500 frames each way once up |
+| Sleep and wake, twice (4 minutes and 2.5 minutes asleep), a frame every 10 ms each way from one Python program | "woke from sleep, restoring interfaces" and both restored each time; a "restarted" error frame on each interface; the program carried on and no send was refused. 217 of 74,868 frames were lost around the two sleeps |
+
+The Kvaser USBcan Light 4xHS (channel 1, `can7`) against the X6, 250 kbit/s:
+
+| Check | Result |
+|---|---|
+| Listen-only, and CAN FD, asked of the Kvaser | Refused in words; the interface stays down |
+| The X6 listen-only, one frame from the Kvaser | Error-passive reported once; the X6 sees the retries |
+| Standard, 29-bit, remote and empty frames, each way | Intact |
+| 5000 frames back to back each way | All received and all reported sent, in order. The receiver's stamp and the sender's report of the same frame differed by 30 µs on average |
+| ISO-TP, 4095 bytes, each way, STmin 5 ms, 1 ms and 0 | Intact in all six, at both ends' stamps. Idle time from the Kvaser 5.07 to 5.36 ms and 1.06 to 1.33 ms; from the X6 5.17 to 5.58 ms and 1.17 to 1.60 ms. None under STmin |
+| J1939, 1785, 20,000 and 200,000 bytes to an address, each way | Intact; 200,000 bytes took 16.0 s in each direction. The first J1939 through the Kvaser backend |
+| J1939 broadcast of 700 bytes, each way | Intact. Packets 50.7 to 50.9 ms apart from the Kvaser, 51.1 to 51.4 ms from the X6 |
+| A cyclic message every 10 ms for 3 s | 9.87 to 10.14 ms apart from the Kvaser, 9.91 to 10.14 ms from the X6 |
+| The X6 down, five frames from the Kvaser, the X6 brought up | Shown as sent only then, in order, and all five received |
+| Five frames waiting, the Kvaser taken down and up | None goes out; a new frame does |
+| 40 frames with nobody to acknowledge | 32 taken, 8 refused; all 32 arrive in order when the X6 comes up |
+| Both directions at once at 40 % bus load each, 96,000 frames each way, 120 s | All received, in order; none refused; no error frames; nothing in the timing log |
+| Daemon stopped by SIGTERM with both up (not run on this adapter before) | "can7 taken off the bus"; after a restart a frame from the X6 alone got no acknowledgement |
+| Daemon killed by SIGKILL with both up | The next daemon took the channel off the bus as it attached: the X6 alone got no acknowledgement |
+| Unplugged while sending and receiving every 20 ms | The programs on `can7` were told at once, the four interfaces were removed, the X6 went error-passive and its sender was refused |
+| Sleep and wake (111 s asleep), a frame every 10 ms each way | Both restored 0.24 s after the wake, a "restarted" error frame on each, no send refused; 25 of 5887 frames lost each way |
+
+Two X6 channels (connectors CAN1 and CAN2), 500 kbit/s with 2 Mbit/s data:
+
+| Check | Result |
+|---|---|
+| Classic frames and CAN FD frames of 0, 3, 12, 48 and 64 bytes, with and without bit rate switching, one with the error state indicator, each way | All 30 the same at both ends; the sender's report within 2 µs of the receiver's stamp |
+| 5000 frames of 64 bytes back to back, each way | All received, in order: 734 frames a second without bit rate switching and 2582 with it, as on 2026-11-14 |
+| ISO-TP, 4095 bytes in 64-byte frames with bit rate switching, each way, STmin 5 ms, 1 ms and 0 | Intact. Frame ends 5.65 to 5.82 ms and 1.75 to 1.87 ms apart in one direction, 6.54 to 6.71 ms and 2.52 to 2.65 ms in the other; none under STmin |
+| Both ways at once, 20,000 frames of random length from each end 0.4 ms apart, one end switching bit rate | Both ends show the same 40,000 frames in the same order; no error frames; nothing in the timing log |
+
+`canctl latency vcan0` on the daemon that held the adapters: medians of 33 to 42 µs in six runs in the first session, 47 to 69 µs in three runs later (99th percentiles 86 to 204 µs). Daemon memory was 8 to 9 MB throughout.
+
+What moved against earlier entries:
+
+- **The restore after a wake came 0.87 s, 0.35 s and 0.24 s after it**, where earlier entries have 0.24 s. Nothing changed: the daemon looks for a wake once a second, so the restore comes at any time up to a second after it, and the frames sent in between are lost. hardware.md said "about a quarter of a second" and now says "within about a second".
+- **The X6's ISO-TP gaps were up to 1.35 ms over STmin**, where 1.2 ms was the most seen before. The means are as before (1.15 ms over at STmin 5 ms against 1.06 ms on 2026-11-13).
+- **On a quiet bus the X6 stamped a frame 0.6 to 1.0 ms later than the other adapter did**, the lateness listed under Open. In a transfer with frames 1.5 ms apart its estimate stepped back by 0.49 ms once, which made one gap read 1.09 ms on the X6's stamps where the sender's own stamps have 1.58 ms.
+- Everything else is within what was measured before: the scatter of the stamps, the gaps from the classic PCAN-USB and the Kvaser, the broadcast gaps (shorter than at 250 kbit/s by the shorter frame), the cyclic intervals, the CAN FD frame rates and the latency on the virtual interface.
+
+One fault was found. Plugged in while a web browser (Google Chrome) was running, the Kvaser was refused in two of three attempts: "selecting the USB configuration: could not open device for exclusive access". The browser opens every USB device for a moment as it appears, selecting a configuration needs the device to oneself, and the daemon tried once; a moment later the device was free, and a daemon started then attached it. The Kvaser backend now tries again for up to five seconds while the system says another program has the device, and says so in its log when it had to wait. On that build the adapter attached in five of five plug-ins with the browser running, none of which needed the wait; with a second daemon holding the adapter for two seconds, the new build logged "another program had the adapter; it was free after 2000 ms" and attached it. The Kvaser checks above from the frames to the two-way run were repeated on that build (48,000 frames each way), and the sleep was run on it. The PEAK backends are unchanged and still try once; the browser does not get in their way, because they need only an interface and not the device to themselves.
+
+Not done: bus-off (not provoked on any adapter in this run), the Kvaser's channels 2 to 4, bitrates other than 250 kbit/s on the Kvaser, CAN FD at other bitrates than 500 kbit/s with 2 Mbit/s, the classic PCAN-USB behind a hub or a dock, and a run longer than 8 minutes. The retry was not seen to act against the browser itself, only against a second daemon. Under the launch agent, on a virtual interface, the same latency measurement gave medians of 85 to 100 µs within the hour; that difference was not looked into.
+
 ## Bugs found on hardware and fixed
 
 | Symptom | Cause | Fixed |
@@ -600,6 +667,7 @@ Not done: the limits themselves on real adapters, which behave no differently th
 | A flush, or any other request the daemon acknowledges, failed with "Resource temporarily unavailable" when the program had last received with a short timeout and a frame ahead of the request was waiting for room in an adapter (seen from Python with the Kvaser alone on the bus) | The socket's read timeout, set by the last receive, also cut the wait for an acknowledgement short. An acknowledgement is now waited for until it comes | With the Kvaser backend |
 | The X6's connectors changed interface names when it was plugged in again | Its three USB devices were attached in the order the system found them, which varies. They are now gathered and attached in the order of their ports on the X6's hub | 2026-11-14 |
 | A J1939 abort for a message whose socket closed never reached the bus when that socket was the last on its interface; the receiver waited for its timeout | The interface's stack ended with its last socket, before the frames it still had to send were handed over. It now ends once they are out | 2026-11-16 |
+| The Kvaser was not attached when it was plugged in with a web browser running: "could not open device for exclusive access", in two of three attempts | The browser opens a new USB device for a moment, and the daemon tried once to select the adapter's configuration. The Kvaser backend now tries again for up to five seconds while another program has the device | 2026-11-17 |
 
 ## Open
 
@@ -632,5 +700,8 @@ Needs other hardware or work first:
 - **Other `peak_fd` models** (PCAN-USB FD, Pro FD, Chip): untested.
 - **Kvaser, on the adapter tested**: bus-off; channels 3 and 4 with traffic; bitrates other than 250 kbit/s with traffic.
 - **Other Kvaser adapters**: the Leaf v3 and U100 (hydra, untested); the Leaf Light v2 (no backend).
+- **A PEAK adapter that another program holds as it is plugged in is not tried again.** The Kvaser backend waits since 2026-11-17; the PEAK backends try once. Not seen to matter: a web browser does not claim their interfaces.
+- **The wait for a Kvaser that another program holds has not been seen to act against a web browser**, only against a second daemon.
+- **Delivery latency under the launch agent** read 85 to 100 µs in the median on a virtual interface on 2026-11-17, against 33 to 69 µs from a daemon started by hand within the same hour. Not looked into.
 
 Never tested at all: bus load near 100 % from several nodes, error frames caused by a real fault (short, wrong bitrate on one node), more than two nodes, remote adapters on a hub under USB contention.

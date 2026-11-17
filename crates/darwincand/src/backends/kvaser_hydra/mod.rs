@@ -716,6 +716,36 @@ fn identify(device: &Device) -> io::Result<(Info, proto::CardInfo, proto::Softwa
     Ok((info, card, software))
 }
 
+/// How often, and how long apart, taking the adapter over is tried again
+/// while another program has it: five seconds in all.
+const BUSY_ATTEMPTS: u32 = 20;
+const BUSY_RETRY: Duration = Duration::from_millis(250);
+
+/// Do `step`, again for as long as the system says another program has the
+/// device. A web browser opens every USB device for a moment as it is
+/// plugged in, to read what it is; selecting a configuration needs the
+/// device to ourselves, and one attempt at that moment is refused.
+fn while_busy<T>(mut step: impl FnMut() -> Result<T, nusb::Error>) -> Result<T, nusb::Error> {
+    let mut attempt = 1;
+    loop {
+        match step() {
+            Err(e) if e.kind() == nusb::ErrorKind::Busy && attempt < BUSY_ATTEMPTS => {
+                attempt += 1;
+                thread::sleep(BUSY_RETRY);
+            }
+            done => {
+                if attempt > 1 && done.is_ok() {
+                    log(format!(
+                        "another program had the adapter; it was free after {} ms",
+                        (attempt - 1) * BUSY_RETRY.as_millis() as u32
+                    ));
+                }
+                return done;
+            }
+        }
+    }
+}
+
 /// Take over an adapter and register its channels as interfaces. Returns
 /// the interface names.
 pub fn attach(daemon: &Daemon, info: &DeviceInfo) -> io::Result<Vec<String>> {
@@ -731,11 +761,14 @@ pub fn attach(daemon: &Daemon, info: &DeviceInfo) -> io::Result<Vec<String>> {
             .configurations()
             .next()
             .map_or(1, |c| c.configuration_value());
-        usb.set_configuration(configuration)
-            .wait()
-            .map_err(|e| usb_error("selecting the USB configuration", e))?;
+        while_busy(|| usb.set_configuration(configuration).wait()).map_err(|e| {
+            usb_error(
+                "selecting the USB configuration (is another application using the adapter?)",
+                e,
+            )
+        })?;
     }
-    let interface = usb.claim_interface(0).wait().map_err(|e| {
+    let interface = while_busy(|| usb.claim_interface(0).wait()).map_err(|e| {
         usb_error(
             "claiming the USB interface (is another application using the adapter?)",
             e,

@@ -14,7 +14,7 @@ An adapter counts as **tested** only for what has actually been run against the 
 
 The following are not supported yet: Kvaser's older adapters (Leaf Light, Leaf Light v2 and USBcan II, which speak the "leaf" protocol), gs_usb / candleLight devices, and SLCAN serial adapters. See the [roadmap](roadmap.md).
 
-No driver, kernel extension or root access is needed. macOS lets only one program claim a USB device, so quit other CAN software (PCAN-View, MacCAN-based tools, Kvaser CANlib) before starting the daemon.
+No driver, kernel extension or root access is needed. macOS lets only one program claim a USB device, so quit other CAN software (PCAN-View, MacCAN-based tools, Kvaser CANlib) before starting the daemon. A web browser that is running opens a newly attached USB device for a moment; the daemon waits up to five seconds for a Kvaser adapter to become free, and says so in its log.
 
 ## What each adapter can do
 
@@ -51,10 +51,10 @@ What was run differs between the adapters:
 | Adapter | Bitrates with traffic | Also tested | Not yet tested |
 |---|---|---|---|
 | PCAN-USB X6 | 125 kbit/s to 1 Mbit/s; CAN FD data at 1 to 8 Mbit/s | Bus-off caused by a short circuit, and recovery from it; CAN FD frames of every length with and without bit rate switching; ISO-TP over CAN FD; J1939 transport; all six connectors | CAN FD against another maker's node; long cables and non-default sample points |
-| PCAN-USB | 125 kbit/s to 1 Mbit/s | Bus-off caused by a short circuit, and recovery from it | Hardware older than revision 41 |
-| USBcan Light 4xHS | 250 kbit/s | Two of its own channels on one bus | Bus-off; other bitrates under traffic (10 kbit/s and 1 Mbit/s are accepted); a daemon stopped by a signal (a killed one was tested) |
+| PCAN-USB | 125 kbit/s to 1 Mbit/s | Bus-off caused by a short circuit, and recovery from it; J1939 transport | Hardware older than revision 41 |
+| USBcan Light 4xHS | 250 kbit/s | Two of its own channels on one bus; J1939 transport | Bus-off; other bitrates under traffic (10 kbit/s and 1 Mbit/s are accepted) |
 
-Every test so far has had darwinCAN at both ends of the cable, with two different makers' controllers. Nothing has yet been checked against an independent CAN stack such as a Linux machine or a production ECU.
+Almost every test so far has had darwinCAN at both ends of the cable, with two different makers' controllers. The exceptions are J1939 and its tools, and one ISO-TP message, which have been run against Linux on one bus. Nothing has been checked against a production ECU.
 
 ## Using an adapter
 
@@ -71,7 +71,7 @@ canctl link set can0 down
 
 **Names.** Each adapter channel keeps the interface name it was first given, whatever else is plugged in and in whatever order. An adapter is recognised by its serial number; one without a serial number of its own (the classic PCAN-USB) is recognised by the USB port it is in, and it gets a different name if it is moved to another port. `canctl link set can0 name chassis` gives an interface a name of your choosing. `canctl list` shows which adapter and channel is behind each name. A multi-channel adapter's interfaces follow the order of the connectors on its housing.
 
-**Sleep.** Adapters lose their bus settings when the Mac sleeps. About a quarter of a second after waking, the daemon restores every interface that was up and sends its clients a "restarted" error frame. Frames that were with the adapter at that moment are lost. Use `caffeinate -i` to keep the Mac awake while a bus must not be interrupted.
+**Sleep.** Adapters lose their bus settings when the Mac sleeps. Within about a second of waking, the daemon restores every interface that was up and sends its clients a "restarted" error frame. Frames that were with the adapter when the Mac went to sleep, and frames sent before the interface is restored, are lost. Use `caffeinate -i` to keep the Mac awake while a bus must not be interrupted.
 
 **Bus-off.** A controller driven off the bus by a fault stays off: the interface refuses frames with "is bus-off; take it down and up again" until that is done. There is no automatic restart yet.
 
@@ -85,8 +85,8 @@ Frames are timestamped by the adapter and placed on the Mac's clock by the daemo
 |---|---|---|---|
 | Scatter of timestamps on back-to-back frames | 3–6 µs | 17–22 µs | One step of 102.4 µs |
 | The same frame stamped by two adapters | Within about 0.1 ms on a busy bus | Within about 0.1 ms on a busy bus | Within 0.1 ms of the X6 |
-| ISO-TP gap in excess of STmin (never under it) | 0.2 to 1.2 ms | About 0.4 ms | 0.02 to 0.26 ms |
-| Cyclic 10 ms message, spread of intervals | 9.83 to 10.15 ms | Not measured | 9.83 to 10.14 ms |
+| ISO-TP gap in excess of STmin (never under it) | 0.2 to 1.4 ms | About 0.4 ms | 0.02 to 0.36 ms |
+| Cyclic 10 ms message, spread of intervals | 9.83 to 10.15 ms | 9.86 to 10.18 ms | 9.83 to 10.14 ms |
 
 The following points are worth knowing:
 

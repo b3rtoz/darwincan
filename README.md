@@ -9,6 +9,8 @@ macOS has no CAN stack, and it lets only one process claim a USB adapter, so on 
   <img src="docs/images/architecture-light.svg" width="760" alt="Architecture: any number of programs (the command-line tools, your own program through the Rust or C library, Python through python-can) connect over a Unix socket to the darwincand daemon, which does frame fan-out, filtering, timestamps, ISO-TP, the broadcast manager and J1939, and drives the USB CAN adapters behind the interfaces vcan0, can0, can1.">
 </picture>
 
+**Licence:** this repository has two licences. The daemon is [GPL-2.0-only](LICENSE-GPL-2.0); the libraries, the tools and the Python package are [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). A program built on darwinCAN may carry any licence. See [Licence](#licence).
+
 ## What it gives you
 
 - **The tools you know from Linux**: `candump`, `cansend`, `cangen`, `canplayer`, `cansniffer`, `isotpsend`, `isotprecv`, `isotpdump` and the J1939 tools (`j1939acd`, `j1939spy`, `j1939cat`, `j1939sr`, `testj1939`), with the can-utils command lines and output, and `canctl link ...` in place of `ip link ...`.
@@ -134,7 +136,9 @@ The daemon trusts every program that can open its socket, which by default means
 
 ## Licence
 
-The daemon (`crates/darwincand`) is licensed under GPL-2.0-only, because its hardware backends are derived from the Linux kernel's CAN drivers.
+The repository holds three licence files, and which one applies depends on the part. Every source file names its licence in an `SPDX-License-Identifier` line at its top.
+
+The daemon (`crates/darwincand`) is licensed under [GPL-2.0-only](LICENSE-GPL-2.0), because its hardware backends are derived from the Linux kernel's CAN drivers.
 
 Everything an application uses (the client library in Rust and C, the protocol crates, the tools and the Python package) is licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option. A program talks to the daemon over a socket and does not link it, so an application built on darwinCAN may use any licence.
 
