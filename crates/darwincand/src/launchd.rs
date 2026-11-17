@@ -28,6 +28,33 @@ pub fn log_path(home: &Path) -> PathBuf {
     home.join("Library/Logs/darwincand.log")
 }
 
+/// The path a package manager keeps for a program it installed at
+/// `resolved`, if `resolved` looks like one of its versioned directories.
+///
+/// Homebrew installs into `<prefix>/Cellar/<formula>/<version>/` and keeps
+/// `<prefix>/opt/<formula>` pointing at the version in use. An agent that
+/// names the versioned path stops working when the formula is upgraded and
+/// that directory is removed; one that names the `opt` path does not. The
+/// caller checks that the path returned really is the same program.
+pub fn stable_program(resolved: &Path) -> Option<PathBuf> {
+    let mut parts = resolved.components();
+    let mut prefix = PathBuf::new();
+    loop {
+        let part = parts.next()?;
+        if part.as_os_str() == "Cellar" {
+            break;
+        }
+        prefix.push(part);
+    }
+    let formula = parts.next()?;
+    let _version = parts.next()?;
+    let rest = parts.as_path();
+    if rest.as_os_str().is_empty() {
+        return None;
+    }
+    Some(prefix.join("opt").join(formula).join(rest))
+}
+
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -160,6 +187,33 @@ pub fn take_listener() -> io::Result<UnixListener> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_versioned_homebrew_path_has_a_stable_one() {
+        assert_eq!(
+            stable_program(Path::new(
+                "/opt/homebrew/Cellar/darwincan/0.1.0/bin/darwincand"
+            )),
+            Some(PathBuf::from("/opt/homebrew/opt/darwincan/bin/darwincand"))
+        );
+        assert_eq!(
+            stable_program(Path::new(
+                "/usr/local/Cellar/darwincan/0.1.0_1/bin/darwincand"
+            )),
+            Some(PathBuf::from("/usr/local/opt/darwincan/bin/darwincand"))
+        );
+        // Anywhere else, and a path that ends before the program, has none.
+        assert_eq!(stable_program(Path::new("/usr/local/bin/darwincand")), None);
+        assert_eq!(
+            stable_program(Path::new("/Users/me/darwincan/target/release/darwincand")),
+            None
+        );
+        assert_eq!(
+            stable_program(Path::new("/opt/homebrew/Cellar/darwincan/0.1.0")),
+            None
+        );
+        assert_eq!(stable_program(Path::new("/opt/homebrew/Cellar")), None);
+    }
 
     #[test]
     fn plist_names_the_program_socket_and_options() {

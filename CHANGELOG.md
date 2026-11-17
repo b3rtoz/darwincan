@@ -15,7 +15,7 @@ The first public release. It has been developed and tested on macOS 26 on Apple 
 - Frames are timestamped once, in the daemon, from the adapter's own clock. A frame that a program sends is reported as sent only when the adapter confirms that it was on the bus.
 - The daemon restores interfaces after the Mac wakes from sleep, removes the interfaces of an adapter that is unplugged, and takes its adapters off the bus when it stops.
 - Each adapter channel keeps its interface name, whatever else is plugged in and in whatever order. `canctl link set <name> name <new name>` renames one.
-- `darwincand install` registers the daemon as a launch agent, so that it starts at login and the tools work without starting anything by hand.
+- `darwincand install` registers the daemon as a launch agent, so that it starts at login and the tools work without starting anything by hand. Installed with Homebrew, the agent names the path that Homebrew keeps across upgrades.
 - The daemon limits the ISO-TP and J1939 message data it holds: 128 MiB waiting to be sent and 128 MiB waiting to be read for each connection, and 1 GiB for all connections together (`--memory-limit`). A program that sends more waits; it gets no error.
 - The protocol between the daemon and its clients is at version 7. A client from another version is refused with a message that says so.
 

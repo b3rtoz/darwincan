@@ -19,7 +19,7 @@ darwincand install    # add daemon options here, for example --vcan vcan1
 
 This registers the agent `org.darwincan.darwincand` for your user account. launchd creates the socket and hands it to the daemon. As a result, the tools work from login onwards with nothing to start by hand, a program that connects while the daemon is still starting waits instead of failing, and the daemon is started again if it ever exits. The daemon's messages go to `~/Library/Logs/darwincand.log`.
 
-Run `darwincand install` again if the `darwincand` executable moves to a different path, for example after building or installing somewhere else. `darwincand uninstall` removes the agent, and `darwincand install --print` shows the property list without installing it.
+Run `darwincand install` again if the `darwincand` executable moves to a different path, for example after building or installing somewhere else. Installed with Homebrew, the agent names the path that Homebrew keeps across upgrades, so an upgrade needs nothing but a restart of the daemon to use the new version. `darwincand uninstall` removes the agent, and `darwincand install --print` shows the property list without installing it.
 
 | Option | Meaning |
 |---|---|

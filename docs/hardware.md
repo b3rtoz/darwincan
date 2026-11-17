@@ -109,7 +109,7 @@ The full list, with the details, is under "Open" in the [validation log](notes/h
 
 A report on an adapter that is listed as untested, whether it works or fails, is one of the most useful contributions to the project. Open an issue with:
 
-- the adapter's model, hardware revision and firmware version (the daemon prints them when it attaches the adapter, and `canctl list` shows them);
+- the adapter's model, hardware revision and firmware version (the daemon prints them when it attaches the adapter, and `canctl list` shows them; both also show the adapter's serial number, which you may leave out);
 - the macOS version and whether the Mac is Apple silicon or Intel;
 - what the adapter was connected to, and the bitrate;
 - what you ran, and the daemon's messages (they are in `~/Library/Logs/darwincand.log` when the daemon runs under the launch agent, and in the terminal otherwise).

@@ -286,6 +286,11 @@ fn install(options: &Options) -> Result<(), String> {
     let program = std::env::current_exe()
         .and_then(|p| p.canonicalize())
         .map_err(|e| format!("cannot find this executable: {e}"))?;
+    // Installed by a package manager, name the path that survives an
+    // upgrade, as long as it leads to this executable today.
+    let program = launchd::stable_program(&program)
+        .filter(|stable| stable.canonicalize().is_ok_and(|p| p == program))
+        .unwrap_or(program);
     let socket = options.socket.clone().unwrap_or_else(default_socket_path);
     if !socket.is_absolute() {
         return Err("the launch agent needs an absolute --socket path".into());
