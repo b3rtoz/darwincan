@@ -6,10 +6,10 @@ The package is in [`python/`](../python). It is pure Python on top of the C libr
 
 ## Install
 
-Build and install the daemon and the C library first (see [c-api.md](c-api.md#install)). Then install the package into the Python environment that your program uses:
+Install the daemon and the C library first, with Homebrew (`brew install b3rtoz/darwincan/darwincan`) or from the source (see [c-api.md](c-api.md#install)). Then install the package, from a clone of the repository, into the Python environment that your program uses:
 
 ```sh
-sudo make install            # or: make install PREFIX=$HOME/.local
+sudo make install            # from the source; or: make install PREFIX=$HOME/.local
 pip install ./python
 ```
 

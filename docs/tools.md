@@ -10,12 +10,14 @@ This page explains how to run `darwincand`, manage interfaces and use the tools.
 darwincand &          # run it by hand; creates the virtual interface vcan0
 ```
 
-To have the daemon running from the moment you log in, install it as a launch agent:
+To have the daemon there from the moment you log in, install darwinCAN and register the daemon as a launch agent:
 
 ```sh
-sudo make install     # the daemon, tools and C library into /usr/local
-darwincand install    # add daemon options here, for example --vcan vcan1
+brew install b3rtoz/darwincan/darwincan   # or, from the source: sudo make install
+darwincand install                        # add daemon options here, for example --vcan vcan1
 ```
+
+`sudo make install` puts the daemon, the tools and the C library into `/usr/local`, and `make install PREFIX=$HOME/.local` puts them somewhere else.
 
 This registers the agent `org.darwincan.darwincand` for your user account. launchd creates the socket and hands it to the daemon. As a result, the tools work from login onwards with nothing to start by hand, a program that connects while the daemon is still starting waits instead of failing, and the daemon is started again if it ever exits. The daemon's messages go to `~/Library/Logs/darwincand.log`.
 

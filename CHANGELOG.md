@@ -4,7 +4,7 @@ This file records what changes in each release of darwinCAN. The newest release 
 
 darwinCAN has no stable interface before version 1.0: any release may change the Rust, C and Python interfaces and the protocol between the daemon and its clients. The daemon, the libraries and the programs that use them must always come from the same release.
 
-## 0.1.0 (2026-11-16)
+## 0.1.0 (2026-11-18)
 
 The first public release. It has been developed and tested on macOS 26 on Apple silicon. See [docs/roadmap.md](docs/roadmap.md) for the state of each part and for the known limitations.
 
@@ -50,6 +50,11 @@ The first public release. It has been developed and tested on macOS 26 on Apple 
 
 - The daemon (`crates/darwincand`) is licensed under GPL-2.0-only, because its hardware backends are derived from the Linux kernel's CAN drivers.
 - The libraries, the protocol crates, the tools and the Python package are licensed under MIT or Apache-2.0, at your option. A program talks to the daemon over a socket and does not link it, so a program built on darwinCAN may carry any licence.
+
+### Installing
+
+- With Homebrew: `brew install b3rtoz/darwincan/darwincan`. The formula builds from source.
+- From the source: `make install` installs the daemon, the tools, the C library, its headers and a pkg-config file.
 
 ### Requirements
 

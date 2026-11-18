@@ -27,17 +27,20 @@ darwinCAN is not the Linux kernel interface. There is no `AF_CAN` socket family,
 
 **darwinCAN is at version 0.1.** It is usable and has been tested on real buses with adapters from two makers, but it is not yet stable: programming interfaces may still change, and the daemon and the programs that talk to it must come from the same build. See [docs/roadmap.md](docs/roadmap.md) for what works, what is planned, and the known limitations.
 
-To build it you need macOS, the Xcode command line tools, and Rust 1.85 or later. It has been developed and tested on macOS 26 on Apple silicon; older macOS versions and Intel Macs are expected to work but have not been tested.
+It installs with Homebrew. To build it yourself you need macOS, the Xcode command line tools, and Rust 1.85 or later. It has been developed and tested on macOS 26 on Apple silicon; older macOS versions and Intel Macs are expected to work but have not been tested.
 
 ## Quick start
 
-```sh
-git clone https://github.com/b3rtoz/darwincan
-cd darwincan
-cargo build --release
-export PATH="$PWD/target/release:$PATH"
+Install it with [Homebrew](https://brew.sh), which builds it from source, and register the daemon as a launch agent for your user:
 
-darwincand &                                   # the daemon; creates vcan0
+```sh
+brew install b3rtoz/darwincan/darwincan
+darwincand install                             # the daemon starts when it is needed; creates vcan0
+```
+
+Then try it on the virtual interface:
+
+```sh
 candump vcan0 &
 cansend vcan0 123#DEADBEEF
 cansend vcan0 123##1112233445566778899AABBCC   # CAN FD with bit rate switching
@@ -55,12 +58,17 @@ canctl link set can0 up type can bitrate 500000
 candump can0
 ```
 
-To install the daemon, the tools and the C library, and have the daemon start at login:
+To build from source instead, and try it without installing anything:
 
 ```sh
-sudo make install        # into /usr/local; or: make install PREFIX=$HOME/.local
-darwincand install       # registers a launch agent for your user
+git clone https://github.com/b3rtoz/darwincan
+cd darwincan
+cargo build --release
+export PATH="$PWD/target/release:$PATH"
+darwincand &             # the daemon, run by hand
 ```
+
+`sudo make install` (or `make install PREFIX=$HOME/.local`) installs the daemon, the tools and the C library from a build, and `darwincand install` then registers the launch agent as above.
 
 ## Supported hardware
 

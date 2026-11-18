@@ -34,7 +34,7 @@ The items below are listed roughly in the order they are likely to be done.
 | Kvaser "leaf" backend | Support for the Leaf Light v2 and Kvaser's other older adapters. |
 | gs_usb / candleLight backend | Support for the open firmware used by many low-cost adapters. |
 | SLCAN backend | Support for adapters that present themselves as a serial port. |
-| Packaging | A Homebrew formula is written and has been installed and tested from a local tap; it is to be published in a tap once the first release is tagged. A Python wheel that includes the C library, so that `pip install` is the only step, is still to do. |
+| Packaging | A Homebrew formula is in the tap `b3rtoz/darwincan` (`brew install b3rtoz/darwincan/darwincan`). It builds from source; there are no prebuilt bottles, and it is not in Homebrew's own repository. A Python wheel that includes the C library, so that `pip install` is the only step, is still to do. |
 | ISO-TP extended and mixed addressing | Only normal addressing is supported today. |
 | Long soak tests | Runs lasting hours, at high bus load, with several nodes on the bus. |
 
