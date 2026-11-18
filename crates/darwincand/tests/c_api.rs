@@ -3,6 +3,8 @@
 //! The C API against a real daemon: a C program built from the header
 //! and the library as a C user would, and the version check both ways.
 
+mod support;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -48,13 +50,7 @@ impl Drop for CProgram {
 
 fn build(source: &str, tag: &str) -> CProgram {
     let client = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../darwincan");
-    // The static library is built beside this test.
-    let library = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("libdarwincan.a");
-    assert!(library.exists(), "{} is missing", library.display());
+    let library = support::client_library("libdarwincan.a");
     let program = CProgram(PathBuf::from(format!(
         "/tmp/darwincan-c-{}-{tag}",
         std::process::id()

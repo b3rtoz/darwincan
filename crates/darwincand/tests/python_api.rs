@@ -12,6 +12,8 @@
 //! `DARWINCAN_PYTHON` names another interpreter. Without one that can
 //! import both, the test says so and does nothing.
 
+mod support;
+
 use std::io;
 use std::path::PathBuf;
 use std::process::Command;
@@ -81,13 +83,7 @@ fn the_python_package_passes_its_tests() {
         );
         return;
     };
-    // The C library is built beside this test.
-    let library = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("libdarwincan.dylib");
-    assert!(library.exists(), "{} is missing", library.display());
+    let library = support::client_library("libdarwincan.dylib");
 
     let path = SockPath(PathBuf::from(format!(
         "/tmp/darwincan-py-{}.sock",

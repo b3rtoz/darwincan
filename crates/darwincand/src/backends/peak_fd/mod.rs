@@ -417,10 +417,8 @@ pub fn attach(
 
     let endpoint = |e| usb_error("opening an endpoint", e);
     let mut transmitters = Vec::new();
-    for channel in 0..usize::from(model.channels) {
-        let out = interface
-            .endpoint(fw.data_out_ep[channel])
-            .map_err(endpoint)?;
+    for &address in fw.data_out_ep.iter().take(usize::from(model.channels)) {
+        let out = interface.endpoint(address).map_err(endpoint)?;
         transmitters.push(Transmitter::new(out));
     }
     let device = Arc::new(Device {
