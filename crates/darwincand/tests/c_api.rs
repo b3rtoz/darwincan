@@ -266,13 +266,15 @@ fn the_cyclic_example_sends_on_time_and_changes_its_data() {
     }
     assert!(child.wait().unwrap().success());
     assert!((45..=60).contains(&times.len()), "{} frames", times.len());
-    // Frames 1 and later lie on a 20 ms grid; none of them is early.
-    for pair in times[1..].windows(2) {
-        assert!(
-            pair[1] - pair[0] > 19_000_000,
-            "gap {} ns",
-            pair[1] - pair[0]
-        );
-    }
+    // Frames 1 and later lie on a 20 ms grid. The middle gap says so on a
+    // busy machine too; a single gap does not, because a frame that is late
+    // shortens the gap after it.
+    let mut gaps: Vec<u64> = times[1..].windows(2).map(|p| p[1] - p[0]).collect();
+    gaps.sort_unstable();
+    let middle = gaps[gaps.len() / 2];
+    assert!(
+        (19_500_000..=20_500_000).contains(&middle),
+        "middle gap {middle} ns of {gaps:?}"
+    );
     assert!(last == [0, 0] || last == [0, 1], "{last:?}");
 }
